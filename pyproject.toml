@@ -1,0 +1,22 @@
+[project]
+name = "mixed-customer-response"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "benpy",
+    "jupyterlab>=4.5.6",
+    "mcr",
+    "networkx>=3.6.1",
+    "pydantic>=2.13.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "mcr",
+]
+
+[tool.uv.sources]
+mcr = { workspace = true }
+benpy = { git = "https://github.com/markobud/benpy", rev = "development" }
