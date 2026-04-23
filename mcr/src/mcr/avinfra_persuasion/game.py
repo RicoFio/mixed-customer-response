@@ -17,7 +17,11 @@ from .orders import PartialOrder, PreOrder
 from .opt import (
     RoutingSolution,
     RoutingSolutionPoint,
-    build_turn_state_benpy_model_sample_average,
+)
+from .routing_solvers import (
+    RoutingSolverConfig,
+    RoutingSolverConfigLike,
+    solve_routes,
 )
 
 TimeStep: TypeAlias = int
@@ -61,6 +65,9 @@ class Receiver:
     n_scenarios: int = N_SCENARIOS
     average_sampling: bool = AVERAGE_SAMPLING
     rng_seed: int | None = RNG_SEED
+    routing_solver_config: RoutingSolverConfigLike = field(
+        default_factory=RoutingSolverConfig,
+    )
 
     _rng: np.random.Generator = field(init=False, repr=False, compare=False)
     _action_history: list[RoutingSolutionPoint] = field(
@@ -91,24 +98,18 @@ class Receiver:
         pass
 
     def _compute_paths(self) -> RoutingSolution:
-        model = build_turn_state_benpy_model_sample_average(
-            V=self.world.ordered_V,
-            A=self.world.ordered_A,
-            L=self.world.ordered_L,
-            s=self.demand.origin,
-            t=self.demand.destination,
-            scenarios=self._current_belief().sample(
-                n_samples=self.n_scenarios,
-                seed=self.rng_seed,
-            ),
+        scenarios = self._current_belief().sample(
+            n_samples=self.n_scenarios,
+            seed=self.rng_seed,
+        )
+        return solve_routes(
+            world=self.world,
+            source=self.demand.origin,
+            target=self.demand.destination,
+            scenarios=scenarios,
+            config=self.routing_solver_config,
             use_average=self.average_sampling,
         )
-        raw_solution = model.solve(options={"solution": True})
-        solution = RoutingSolution.from_benpy_solution(
-            raw_solution=raw_solution,
-            model=model,
-        )
-        return solution
 
     def _choose_max_element(
         self,

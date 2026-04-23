@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 import math
 
 import networkx as nx
@@ -29,6 +30,12 @@ from .opt import (
     make_independent_world_belief,
     build_benpy_model_sample_average,
     build_turn_state_benpy_model_sample_average,
+)
+from .routing_solvers import (
+    RoutingSolverConfig,
+    RoutingSolverConfigLike,
+    coerce_routing_solver_config,
+    solve_routes,
 )
 from .plotting import (
     plot_infrastructure,
@@ -78,14 +85,6 @@ def build_toy_benpy_model_from_scenarios(
     use_turn_state: bool = True,
 ) -> BenpyModel:
     """Build the toy BenPy model for already-realized scenarios."""
-    def _single_toy_demand(world: World) -> tuple[Node, Node]:
-        demands = {individual.demand for individual in world.individuals}
-        if len(demands) != 1:
-            raise ValueError("The toy BenPy builder expects exactly one demand pair.")
-
-        demand = next(iter(demands))
-        return demand.origin, demand.destination
-    
     source, target = _single_toy_demand(world)
     builder = (
         build_turn_state_benpy_model_sample_average
@@ -110,6 +109,7 @@ def solve_toy_network(
     seed: int | None = 1,
     rel_noise: float = 0.05,
     use_turn_state: bool = True,
+    solver: RoutingSolverConfigLike = None,
 ) -> tuple[list[Scenario], RoutingSolution]:
     """Solve the toy network VLP and return a readable solution wrapper."""
     
@@ -119,16 +119,19 @@ def solve_toy_network(
         seed=seed,
         rel_noise=rel_noise,
     )
-    model = build_toy_benpy_model_from_scenarios(
+    source, target = _single_toy_demand(world)
+    solution = solve_routes(
         world=world,
+        source=source,
+        target=target,
         scenarios=scenarios,
-        use_turn_state=use_turn_state,
+        config=_toy_solver_config(
+            solver=solver,
+            use_turn_state=use_turn_state,
+        ),
+        use_average=True,
     )
-    raw_solution = model.solve(options={"solution": True})
-    return scenarios, RoutingSolution.from_benpy_solution(
-        raw_solution=raw_solution,
-        model=model,
-    )
+    return scenarios, solution
 
 def run_toy_pareto_frontier(
     world: World,
@@ -138,6 +141,7 @@ def run_toy_pareto_frontier(
     seed: int | None = 1,
     rel_noise: float = 0.05,
     use_turn_state: bool = True,
+    solver: RoutingSolverConfigLike = None,
 ) -> None:
     """Solve the toy model and plot a two-objective Pareto projection."""
     scenarios, solution = solve_toy_network(
@@ -146,6 +150,7 @@ def run_toy_pareto_frontier(
         seed=seed,
         rel_noise=rel_noise,
         use_turn_state=use_turn_state,
+        solver=solver,
     )
     model = solution.model
     print(f"status: {solution.status}")
@@ -178,6 +183,26 @@ def run_toy_pareto_frontier(
         ax=ax,
     )
     plt.show()
+
+
+def _single_toy_demand(world: World) -> tuple[Node, Node]:
+    demands = {individual.demand for individual in world.individuals}
+    if len(demands) != 1:
+        raise ValueError("The toy routing helper expects exactly one demand pair.")
+
+    demand = next(iter(demands))
+    return demand.origin, demand.destination
+
+
+def _toy_solver_config(
+    *,
+    solver: RoutingSolverConfigLike,
+    use_turn_state: bool,
+) -> RoutingSolverConfig:
+    config = coerce_routing_solver_config(solver)
+    if solver is None or isinstance(solver, str):
+        return replace(config, use_turn_state=use_turn_state)
+    return config
 
 
 
