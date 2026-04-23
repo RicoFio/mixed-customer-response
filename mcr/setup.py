@@ -15,20 +15,21 @@ if Path.cwd().resolve() != ROOT:
 
 
 extension = Extension(
-    name="mcr.avinfra_persuasion._mosp_ext",
+    name="mcr.avinfra_persuasion.routing._mosp_ext",
     sources=[
-        "src/mcr/avinfra_persuasion/_mosp_ext.pyx",
-        "src/mcr/avinfra_persuasion/mosp_adapter.cpp",
-        "../mod/graph/src/graph.cpp",
-        "../mod/preprocessing/src/Preprocessor.cpp",
-        "../mod/search/src/SolutionsList.cpp",
+        "src/mcr/avinfra_persuasion/routing/_mosp_ext.pyx",
+        "src/mcr/avinfra_persuasion/routing/mosp_adapter.cpp",
+        "src/mcr/avinfra_persuasion/routing/mod/graph/src/graph.cpp",
+        "src/mcr/avinfra_persuasion/routing/mod/preprocessing/src/Preprocessor.cpp",
+        "src/mcr/avinfra_persuasion/routing/mod/search/src/SolutionsList.cpp",
     ],
     include_dirs=[
         "src/mcr/avinfra_persuasion",
-        "../mod/datastructures/includes",
-        "../mod/graph/includes",
-        "../mod/preprocessing/includes",
-        "../mod/search/includes",
+        "src/mcr/avinfra_persuasion/routing",
+        "src/mcr/avinfra_persuasion/routing/mod/datastructures/includes",
+        "src/mcr/avinfra_persuasion/routing/mod/graph/includes",
+        "src/mcr/avinfra_persuasion/routing/mod/preprocessing/includes",
+        "src/mcr/avinfra_persuasion/routing/mod/search/includes",
         np.get_include(),
     ],
     define_macros=[
