@@ -1,38 +1,54 @@
 from __future__ import annotations
 
+from abc import abstractmethod
+
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Protocol, TypeAlias
+from functools import cached_property
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeAlias
 
 import benpy
 import networkx as nx
 import numpy as np
 
+if TYPE_CHECKING:
+    from .opt import RoutingSolutionPoint
+
 
 Node: TypeAlias = str | tuple[int, int]
 Arc: TypeAlias = tuple[Node, Node]
 Turn: TypeAlias = tuple[Node, Node, Node]
-MetricName: TypeAlias = str
 
-METRIC_SET = frozenset(
-    {
-        "travel_time",
-        "left_turns",
-        "discomfort",
-        "hazard",
-        "cost",
-        "emissions",
-        "policing",
-    }
-)
+
+class MetricName(str, Enum):
+    TRAVEL_TIME = "travel_time"
+    LEFT_TURNS = "left_turns"
+    DISCOMFORT = "discomfort"
+    HAZARD = "hazard"
+    COST = "cost"
+    EMISSIONS = "emissions"
+    POLICING = "policing"
+
+    @classmethod
+    def coerce(cls, value: MetricName | str) -> MetricName:
+        if isinstance(value, cls):
+            return value
+        return cls(value)
+
+    def __str__(self) -> str:
+        return self.value
+
+
+METRIC_SET = frozenset(MetricName)
 
 OBJECTIVE_VECTOR_ORDER: tuple[MetricName, ...] = (
-    "travel_time",
-    "left_turns",
-    "discomfort",
-    "hazard",
-    "cost",
-    "emissions",
-    "policing",
+    MetricName.TRAVEL_TIME,
+    MetricName.LEFT_TURNS,
+    MetricName.DISCOMFORT,
+    MetricName.HAZARD,
+    MetricName.COST,
+    MetricName.EMISSIONS,
+    MetricName.POLICING,
 )
 
 if frozenset(OBJECTIVE_VECTOR_ORDER) != METRIC_SET:
@@ -58,10 +74,15 @@ class InfrastructureGraph:
     I: set[Arc] = field(default_factory=set)
 
     nominal_travel_time: Mapping[Arc, float] = field(default_factory=dict)
+    nominal_link_capacity: Mapping[Arc, float] = field(default_factory=dict)
+    arc_distances: Mapping[Arc, float] = field(default_factory=dict)
     nominal_discomfort: Mapping[Arc, float] = field(default_factory=dict)
     nominal_hazards: Mapping[Arc, float] = field(default_factory=dict)
     nominal_cost: Mapping[Arc, float] = field(default_factory=dict)
     nominal_policing: Mapping[Node, float] = field(default_factory=dict)
+    
+    bpr_alpha: float = 0.15
+    bpr_beta: float = 4
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "V", set(self.V))
@@ -69,6 +90,22 @@ class InfrastructureGraph:
         object.__setattr__(self, "L", set(self.L))
         object.__setattr__(self, "I", set(self.I))
         object.__setattr__(self, "nominal_travel_time", dict(self.nominal_travel_time))
+        object.__setattr__(
+            self,
+            "nominal_link_capacity",
+            self._complete_arc_map(
+                values=self.nominal_link_capacity,
+                default=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "arc_distances",
+            self._complete_arc_map(
+                values=self.arc_distances,
+                default=lambda arc: float(self.nominal_travel_time[arc]),
+            ),
+        )
         object.__setattr__(self, "nominal_discomfort", dict(self.nominal_discomfort))
         object.__setattr__(self, "nominal_hazards", dict(self.nominal_hazards))
         object.__setattr__(self, "nominal_cost", dict(self.nominal_cost))
@@ -84,6 +121,8 @@ class InfrastructureGraph:
         - travel_time
 
         Optional edge attributes default to simple neutral values:
+        - capacity: 1.0
+        - distance: travel_time
         - discomfort: 0.5 for instrumented arcs, 1.0 otherwise
         - hazard: 0.0
         - toll: 0.0
@@ -124,6 +163,11 @@ class InfrastructureGraph:
             A=A,
             I=I,
             nominal_travel_time=edge_value("travel_time", 0.0),
+            nominal_link_capacity=edge_value("capacity", 1.0),
+            arc_distances=edge_value(
+                "distance",
+                lambda arc: float(G.edges[arc]["travel_time"]),
+            ),
             nominal_discomfort=edge_value(
                 "discomfort",
                 lambda arc: 0.5 if arc in I else 1.0,
@@ -149,10 +193,34 @@ class InfrastructureGraph:
                 raise ValueError(f"Turn {(i, j, k)!r} references an arc outside A.")
 
         self._validate_arc_map("nominal_travel_time", self.nominal_travel_time)
+        self._validate_arc_map("nominal_link_capacity", self.nominal_link_capacity)
+        self._validate_arc_map("arc_distances", self.arc_distances)
         self._validate_arc_map("nominal_discomfort", self.nominal_discomfort)
         self._validate_arc_map("nominal_hazards", self.nominal_hazards)
         self._validate_arc_map("nominal_cost", self.nominal_cost)
         self._validate_node_map("nominal_policing", self.nominal_policing)
+        if any(capacity <= 0 for capacity in self.nominal_link_capacity.values()):
+            raise ValueError("nominal_link_capacity values must be positive.")
+        if any(distance < 0 for distance in self.arc_distances.values()):
+            raise ValueError("arc_distances values cannot be negative.")
+
+    def _complete_arc_map(
+        self,
+        values: Mapping[Arc, float],
+        default: Callable[[Arc], float] | float,
+    ) -> dict[Arc, float]:
+        raw_values = dict(values)
+        extra = set(raw_values) - self.A
+        if extra:
+            raise ValueError(f"Arc map has arcs outside A: {extra!r}")
+        return {
+            arc: float(
+                raw_values[arc]
+                if arc in raw_values
+                else (default(arc) if callable(default) else default)
+            )
+            for arc in self.A
+        }
 
     def _validate_arc_map(self, name: str, values: Mapping[Arc, float]) -> None:
         keys = set(values)
@@ -171,6 +239,82 @@ class InfrastructureGraph:
             raise ValueError(f"{name} is missing nodes: {missing!r}")
         if extra:
             raise ValueError(f"{name} has nodes outside V: {extra!r}")
+    
+    @cached_property
+    def ordered_arcs(self) -> tuple[Arc, ...]:
+        return tuple(sorted(self.A, key=str))
+    
+    @cached_property
+    def ordered_capacities(self) -> np.ndarray:
+        return np.array(
+            [self.nominal_link_capacity[arc] for arc in self.ordered_arcs],
+            dtype=float,
+        )
+    
+    @cached_property
+    def ordered_travel_times(self) -> np.ndarray:
+        return np.array(
+            [self.nominal_travel_time[arc] for arc in self.ordered_arcs],
+            dtype=float,
+        )
+    
+    @cached_property
+    def ordered_arc_distances(self) -> np.ndarray:
+        return np.array(
+            [self.arc_distances[arc] for arc in self.ordered_arcs],
+            dtype=float,
+        )
+
+    def get_actual_travel_times(self, volumes: Mapping[Arc, float]) -> Mapping[Arc, float]:
+        """Return congestion-adjusted per-arc travel times using the BPR formula."""
+        self._validate_volume_map(volumes)
+        ordered_volumes = np.array(
+            [float(volumes.get(arc, 0.0)) for arc in self.ordered_arcs],
+            dtype=float,
+        )
+        ratios = ordered_volumes / self.ordered_capacities
+        actual_travel_times = self.ordered_travel_times * (
+            1 + self.bpr_alpha * (ratios ** self.bpr_beta)
+        )
+        
+        return {
+            arc: float(value)
+            for arc, value in zip(self.ordered_arcs, actual_travel_times)
+        }
+
+    def get_actual_emissions(self, volumes: Mapping[Arc, float]) -> Mapping[Arc, float]:
+        """
+        Return congestion-adjusted per-arc emissions.
+
+        This is currently a simple distance-weighted congestion proxy:
+        base emissions scale with arc distance, then increase in proportion to
+        realized travel time divided by nominal travel time. It keeps emissions
+        scenario-level and replaceable once a calibrated emissions model exists.
+        """
+        actual_travel_times = self.get_actual_travel_times(volumes)
+        ordered_actual_travel_times = np.array(
+            [actual_travel_times[arc] for arc in self.ordered_arcs],
+            dtype=float,
+        )
+        travel_time_ratio = np.divide(
+            ordered_actual_travel_times,
+            self.ordered_travel_times,
+            out=np.ones_like(ordered_actual_travel_times),
+            where=self.ordered_travel_times > 0,
+        )
+        actual_emissions = self.ordered_arc_distances * travel_time_ratio
+        
+        return {
+            arc: float(value)
+            for arc, value in zip(self.ordered_arcs, actual_emissions)
+        }
+
+    def _validate_volume_map(self, volumes: Mapping[Arc, float]) -> None:
+        extra = set(volumes) - self.A
+        if extra:
+            raise ValueError(f"Volume map has arcs outside A: {extra!r}")
+        if any(volume < 0 for volume in volumes.values()):
+            raise ValueError("Arc volumes cannot be negative.")
 
 
 @dataclass(frozen=True)
@@ -192,9 +336,15 @@ class World:
     network: InfrastructureGraph
     individuals: frozenset[Individual] = field(default_factory=frozenset)
     normalized_population: bool = False
+    ordered_V: tuple[Node, ...] = field(init=False, repr=False)
+    ordered_A: tuple[Arc, ...] = field(init=False, repr=False)
+    ordered_L: tuple[Turn, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "individuals", frozenset(self.individuals))
+        object.__setattr__(self, "ordered_V", tuple(sorted(self.network.V, key=str)))
+        object.__setattr__(self, "ordered_A", tuple(sorted(self.network.A, key=str)))
+        object.__setattr__(self, "ordered_L", tuple(sorted(self.network.L, key=str)))
         for individual in self.individuals:
             demand = individual.demand
             if demand.origin not in self.network.V:
@@ -263,7 +413,69 @@ class World:
             for individual in self.individuals
             if individual.demand.origin == origin
             and individual.demand.destination == destination
+        )    
+
+    def get_realized_metrics(
+        self,
+        path_choices: Mapping[Individual, RoutingSolutionPoint],
+        name: str = "realized",
+    ) -> Scenario:
+        """
+        Return one realized scenario after all individual path choices are known.
+
+        The realization is computed at the world level. First, every selected
+        path contributes to an arc-volume map. The infrastructure then turns
+        those volumes into congestion-dependent travel times and emissions.
+        Static metrics such as discomfort, hazard, cost, and policing are copied
+        from the infrastructure. Individual regret can later be computed by
+        summing this returned scenario over each individual's chosen path.
+        """
+        self._validate_path_choices(path_choices)
+        arc_volumes = self._arc_volumes_from_path_choices(path_choices)
+        actual_travel_times = self.network.get_actual_travel_times(arc_volumes)
+        actual_emissions = self.network.get_actual_emissions(arc_volumes)
+        return Scenario(
+            name=name,
+            travel_time=actual_travel_times,
+            discomfort=dict(self.discomfort),
+            hazard=dict(self.hazard),
+            cost=dict(self.cost),
+            emissions=actual_emissions,
+            policing=dict(self.policing),
         )
+
+    def _validate_path_choices(
+        self,
+        path_choices: Mapping[Individual, RoutingSolutionPoint],
+    ) -> None:
+        chosen_individuals = set(path_choices)
+        if chosen_individuals != self.individuals:
+            missing = self.individuals - chosen_individuals
+            extra = chosen_individuals - self.individuals
+            raise ValueError(
+                "Path choices must contain exactly the world's individuals. "
+                f"Missing: {missing!r}; extra: {extra!r}."
+            )
+
+        for individual, choice in path_choices.items():
+            if not choice.path:
+                raise ValueError(f"Individual {individual.id!r} has an empty path.")
+            for arc in choice.path:
+                if arc not in self.A:
+                    raise ValueError(
+                        f"Individual {individual.id!r} chose arc outside A: {arc!r}."
+                    )
+
+    def _arc_volumes_from_path_choices(
+        self,
+        path_choices: Mapping[Individual, RoutingSolutionPoint],
+    ) -> dict[Arc, float]:
+        unit_flow = 1.0 / self.total_population if self.normalized_population else 1.0
+        arc_volumes = {arc: 0.0 for arc in self.A}
+        for choice in path_choices.values():
+            for arc in choice.path:
+                arc_volumes[arc] += unit_flow
+        return arc_volumes
 
 
 @dataclass(frozen=True)
@@ -277,6 +489,20 @@ class Scenario:
     cost: Mapping[Arc, float]
     emissions: Mapping[Arc, float]
     policing: Mapping[Node, float]
+    
+    @classmethod
+    def from_world(cls, name: str, world: World) -> Scenario:
+        """Create a deterministic nominal scenario from a world."""
+        zero_volumes = {arc: 0.0 for arc in world.A}
+        return cls(
+            name=name,
+            travel_time=dict(world.travel_time),
+            discomfort=dict(world.discomfort),
+            hazard=dict(world.hazard),
+            cost=dict(world.cost),
+            emissions=world.network.get_actual_emissions(zero_volumes),
+            policing=dict(world.policing),
+        )
 
 
 class WorldBelief(Protocol):
@@ -285,12 +511,19 @@ class WorldBelief(Protocol):
     def sample(self, n_samples: int, seed: int | None = None) -> list[Scenario]:
         ...
 
+@dataclass(frozen=True)
+class Prior:
+    name: str
+    
+    @abstractmethod
+    def sample(self, n_samples: int, seed: int | None = None) -> list[Scenario]:
+        pass
+
 
 @dataclass(frozen=True)
-class FinitePrior:
+class FinitePrior(Prior):
     """Finite scenario prior sampled with replacement."""
 
-    name: str
     support: Mapping[str, Scenario]
     probabilities: Mapping[str, float]
 
@@ -329,7 +562,7 @@ class FinitePrior:
 
 
 @dataclass(frozen=True)
-class SampledPrior:
+class SampledPrior(Prior):
     """Sampler-backed uncertainty over scenarios."""
 
     name: str
@@ -343,19 +576,6 @@ class SampledPrior:
         if len(scenarios) != n_samples:
             raise ValueError("Sampler must return exactly n_samples scenarios.")
         return scenarios
-
-
-@dataclass(frozen=True)
-class Sender:
-    id: str
-    preference: Any | None = None
-    belief: WorldBelief | None = None
-
-
-@dataclass(frozen=True)
-class Receiver(Individual):
-    preference: Any | None = None
-    belief: WorldBelief | None = None
 
 
 @dataclass(frozen=True)

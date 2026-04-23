@@ -13,8 +13,9 @@ import networkx as nx
 
 
 Relation: TypeAlias = tuple[Any, Any]
+"""Where (a, b) implies a ⪯ b"""
 HasseNode: TypeAlias = frozenset[Any]
-
+"""One node of a Hasse Diagram"""
 
 @dataclass
 class PreOrder:
@@ -25,11 +26,12 @@ class PreOrder:
 
     elements: set[Any]
     relations: set[Relation]
-    """(a, b) means a <= b"""
+    """(a, b) means a ⪯ b"""
     hasse_diagram: nx.DiGraph = field(init=False, default_factory=nx.DiGraph)
     """One node per equivalence class, each equivalence class is a set of elements"""
 
     def __post_init__(self) -> None:
+        self.relations = self._transitive_closure()
         self.relations = self._reflexive_closure()
         self._build_hasse_diagram()
         self._validate()
@@ -174,6 +176,94 @@ class PreOrder:
         ]
         return f"PreOrder(Elements: {self.elements}, Hasse edges: {edges_to_show})"
 
+    def draw_hasse_diagram(
+        self,
+        ax: Any | None = None,
+        *,
+        greatest_on_top: bool = True,
+        show: bool = True,
+        title: str | None = None,
+    ) -> Any:
+        """Draw the Hasse diagram.
+
+        Args:
+            ax: Optional matplotlib axis to draw on.
+            greatest_on_top: If True, larger elements are shown higher.
+            show: If True and no axis is provided, call plt.show().
+            title: Optional title override.
+
+        Returns:
+            The matplotlib axis used for plotting.
+        """
+        import matplotlib.pyplot as plt
+
+        if self.hasse_diagram.number_of_nodes() == 0:
+            if ax is None:
+                _, ax = plt.subplots(figsize=(6, 4))
+            ax.set_axis_off()
+            ax.set_title(title or "Empty Hasse diagram")
+            if show:
+                plt.show()
+            return ax
+
+        generations = list(nx.topological_generations(self.hasse_diagram))
+        node_labels = {
+            node: str(_format_hasse_node(node)).replace("_", "\n")
+            for node in self.hasse_diagram.nodes()
+        }
+
+        pos: dict[HasseNode, tuple[float, float]] = {}
+        for layer_idx, layer in enumerate(generations):
+            ordered_layer = sorted(layer, key=lambda node: node_labels[node])
+            width = max(1, len(ordered_layer) - 1)
+            for col_idx, node in enumerate(ordered_layer):
+                x = 0.0 if len(ordered_layer) == 1 else col_idx / width
+                y = float(layer_idx)
+                pos[node] = (x, y if greatest_on_top else -y)
+
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 6))
+
+        nx.draw_networkx_nodes(
+            self.hasse_diagram,
+            pos,
+            ax=ax,
+            node_size=3400,
+            node_shape="s",
+            node_color="#FFFFFF",
+            edgecolors="#FFFFFF",
+            linewidths=1.25,
+        )
+        nx.draw_networkx_edges(
+            self.hasse_diagram,
+            pos,
+            ax=ax,
+            arrows=True,
+            arrowstyle="-",
+            arrowsize=16,
+            width=2,
+            edge_color="#000000",
+        )
+        nx.draw_networkx_labels(
+            self.hasse_diagram,
+            pos,
+            labels=node_labels,
+            ax=ax,
+            font_size=18,
+            font_weight='bold'
+        )
+
+        ax.set_axis_off()
+        if title is None:
+            direction = "maximal elements on top" if greatest_on_top else "minimal elements on top"
+            title = f"Hasse diagram ({direction})"
+        ax.set_title(title)
+
+        if show and ax.figure:
+            ax.figure.tight_layout()
+            plt.show()
+
+        return ax
 
 class PartialOrder(PreOrder):
     """

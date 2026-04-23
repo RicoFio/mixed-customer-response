@@ -11,14 +11,24 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 
-from .datastructures import Arc, Individual, InfrastructureGraph, Node, Scenario, World
+from .datastructures import (
+    Arc,
+    Individual,
+    InfrastructureGraph,
+    MetricName,
+    Node,
+    Scenario,
+    World,
+)
 
 
-ArcMetric = str | Mapping[Arc, float] | None
-NodeMetric = str | Mapping[Node, float] | None
+ArcMetric = MetricName | str | Mapping[Arc, float] | None
+NodeMetric = MetricName | str | Mapping[Node, float] | None
 PathByIndividual = Mapping[str | Individual, Sequence[Node] | Sequence[Arc]]
 PositionMap = Mapping[Node, tuple[float, float]]
-ObjectiveSelector = int | str
+ObjectiveSelector = int | MetricName | str
+ObjectiveName = MetricName | str
+HighlightSpec = str | Sequence[str] | Mapping[str, str] | None
 
 
 def plot_infrastructure(
@@ -109,8 +119,8 @@ def plot_scenario(
     world: World,
     scenario: Scenario,
     paths: PathByIndividual,
-    arc_metric: ArcMetric = "travel_time",
-    node_metric: NodeMetric = "policing",
+    arc_metric: ArcMetric = MetricName.TRAVEL_TIME,
+    node_metric: NodeMetric = MetricName.POLICING,
     ax: Axes | None = None,
     pos: PositionMap | None = None,
     show_labels: bool = True,
@@ -130,6 +140,8 @@ def plot_scenario(
         node_values=node_values,
         instrumented_arcs=world.I,
         show_labels=show_labels,
+        node_metric_name=str(node_metric),
+        arc_metric_name=str(arc_metric),
     )
     _draw_paths(
         ax=ax,
@@ -164,11 +176,13 @@ def plot_pareto_frontier(
     points: Any,
     x_metric: ObjectiveSelector,
     y_metric: ObjectiveSelector,
-    objective_names: Sequence[str] | None = None,
+    objective_names: Sequence[ObjectiveName] | None = None,
     ax: Axes | None = None,
     connect: bool = True,
     annotate: bool = True,
     include_unbounded: bool = False,
+    highlighting: HighlightSpec = None,
+    highlight: HighlightSpec = None,
 ) -> Axes:
     """
     Plot a two-dimensional projection of generated Pareto points.
@@ -230,6 +244,18 @@ def plot_pareto_frontier(
         _draw_axis_connected_frontier(ax=ax, frontier_xy=frontier_xy)
         # _draw_axis_aligned_frontier(ax=ax, frontier_xy=frontier_xy)
 
+    highlight_items = _normalize_highlight_spec(
+        highlight=highlight,
+        highlighting=highlighting,
+    )
+    if highlight_items:
+        _draw_highlighted_pareto_points(
+            ax=ax,
+            xy=xy,
+            point_labels=point_labels,
+            highlight_items=highlight_items,
+        )
+
     if annotate:
         optimum_labels = _metric_optimum_labels(
             point_array=point_array,
@@ -256,6 +282,55 @@ def plot_pareto_frontier(
     ax.grid(True, linewidth=0.5, alpha=0.35)
     ax.legend(loc="best", fontsize=8, frameon=False)
     return ax
+
+
+def _normalize_highlight_spec(
+    highlight: HighlightSpec,
+    highlighting: HighlightSpec,
+) -> tuple[tuple[str, str], ...]:
+    if highlight is not None and highlighting is not None:
+        raise ValueError("Use either highlight or highlighting, not both.")
+
+    spec = highlighting if highlighting is not None else highlight
+    if spec is None:
+        return ()
+    if isinstance(spec, Mapping):
+        return tuple((str(name), str(point_label)) for name, point_label in spec.items())
+    if isinstance(spec, str):
+        return ((spec, spec),)
+    return tuple((str(point_label), str(point_label)) for point_label in spec)
+
+
+def _draw_highlighted_pareto_points(
+    ax: Axes,
+    xy: np.ndarray,
+    point_labels: Sequence[str],
+    highlight_items: Sequence[tuple[str, str]],
+) -> None:
+    label_to_index = {label: point_idx for point_idx, label in enumerate(point_labels)}
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["#1f77b4"])
+
+    for highlight_idx, (legend_label, point_label) in enumerate(highlight_items):
+        if point_label not in label_to_index:
+            available = ", ".join(point_labels)
+            raise ValueError(
+                f"Highlighted point label {point_label!r} is not available. "
+                f"Available labels: {available}."
+            )
+
+        point_idx = label_to_index[point_label]
+        x_value, y_value = xy[point_idx]
+        ax.scatter(
+            [x_value],
+            [y_value],
+            s=190,
+            marker="*",
+            color=colors[highlight_idx % len(colors)],
+            edgecolor="#202020",
+            linewidth=0.8,
+            zorder=7,
+            label=f"{legend_label}: {point_label}",
+        )
 
 
 def _pareto_point_labels(points: Any, n_points: int) -> tuple[str, ...]:
@@ -352,7 +427,7 @@ def _nondominated_minimization_mask(values: np.ndarray) -> np.ndarray:
 def _metric_optimum_labels(
     point_array: np.ndarray,
     metric_indices: Sequence[int],
-    objective_names: Sequence[str] | None,
+    objective_names: Sequence[ObjectiveName] | None,
 ) -> list[list[str]]:
     labels: list[list[str]] = [[] for _ in range(point_array.shape[0])]
     for metric_idx in metric_indices:
@@ -415,7 +490,7 @@ def _filter_bounded_points(
 
 def _objective_index(
     selector: ObjectiveSelector,
-    objective_names: Sequence[str] | None,
+    objective_names: Sequence[ObjectiveName] | None,
     n_objectives: int,
 ) -> int:
     if isinstance(selector, bool):
@@ -429,22 +504,33 @@ def _objective_index(
 
     if objective_names is None:
         raise ValueError("objective_names is required when selecting metrics by name.")
-    if selector not in objective_names:
+    metric = MetricName.coerce(selector)
+    normalized_names = [MetricName.coerce(name) for name in objective_names]
+    if metric not in normalized_names:
         raise ValueError(f"Unknown objective metric: {selector!r}.")
-    return list(objective_names).index(selector)
+    return normalized_names.index(metric)
 
 
 def _objective_label(
     selector: ObjectiveSelector,
-    objective_names: Sequence[str] | None,
+    objective_names: Sequence[ObjectiveName] | None,
 ) -> str:
     if (
         isinstance(selector, int)
         and objective_names is not None
         and 0 <= selector < len(objective_names)
     ):
-        return objective_names[selector]
-    return str(selector)
+        return _metric_label(objective_names[selector])
+    return _metric_label(selector)
+
+
+def _metric_label(metric: ObjectiveName | int) -> str:
+    if isinstance(metric, int):
+        return str(metric)
+    try:
+        return MetricName.coerce(metric).value
+    except ValueError:
+        return str(metric)
 
 
 def _to_digraph(network: InfrastructureGraph) -> nx.DiGraph:
@@ -483,13 +569,14 @@ def _is_grid_node(node: Node) -> bool:
 def _resolve_world_arc_metric(world: World, metric: ArcMetric) -> Mapping[Arc, float] | None:
     if metric is None or isinstance(metric, Mapping):
         return metric
-    if metric == "travel_time":
+    metric_name = MetricName.coerce(metric)
+    if metric_name == MetricName.TRAVEL_TIME:
         return world.travel_time
-    if metric == "discomfort":
+    if metric_name == MetricName.DISCOMFORT:
         return world.discomfort
-    if metric == "hazard":
+    if metric_name == MetricName.HAZARD:
         return world.hazard
-    if metric == "cost":
+    if metric_name == MetricName.COST:
         return world.cost
     raise ValueError(f"World arc metric {metric!r} is not available.")
 
@@ -500,10 +587,11 @@ def _resolve_world_node_metric(
 ) -> Mapping[Node, float] | None:
     if metric is None or isinstance(metric, Mapping):
         return metric
-    if metric == "policing":
-        return world.policing
     if metric == "population":
         return {node: float(world.population_at_node(node)) for node in world.V}
+    metric_name = MetricName.coerce(metric)
+    if metric_name == MetricName.POLICING:
+        return world.policing
     raise ValueError(f"World node metric {metric!r} is not available.")
 
 
@@ -513,16 +601,17 @@ def _resolve_scenario_arc_metric(
 ) -> Mapping[Arc, float] | None:
     if metric is None or isinstance(metric, Mapping):
         return metric
+    metric_name = MetricName.coerce(metric)
     metric_map = {
-        "travel_time": scenario.travel_time,
-        "discomfort": scenario.discomfort,
-        "hazard": scenario.hazard,
-        "cost": scenario.cost,
-        "emissions": scenario.emissions,
+        MetricName.TRAVEL_TIME: scenario.travel_time,
+        MetricName.DISCOMFORT: scenario.discomfort,
+        MetricName.HAZARD: scenario.hazard,
+        MetricName.COST: scenario.cost,
+        MetricName.EMISSIONS: scenario.emissions,
     }
-    if metric not in metric_map:
+    if metric_name not in metric_map:
         raise ValueError(f"Scenario arc metric {metric!r} is not available.")
-    return metric_map[metric]
+    return metric_map[metric_name]
 
 
 def _resolve_scenario_node_metric(
@@ -531,7 +620,8 @@ def _resolve_scenario_node_metric(
 ) -> Mapping[Node, float] | None:
     if metric is None or isinstance(metric, Mapping):
         return metric
-    if metric == "policing":
+    metric_name = MetricName.coerce(metric)
+    if metric_name == MetricName.POLICING:
         return scenario.policing
     raise ValueError(f"Scenario node metric {metric!r} is not available.")
 
@@ -544,6 +634,8 @@ def _draw_metric_network(
     node_values: Mapping[Node, float] | None,
     instrumented_arcs: set[Arc],
     show_labels: bool,
+    node_metric_name: str | None = None,
+    arc_metric_name: str | None = None,
 ) -> None:
     edges = list(graph.edges)
     edge_widths = [3.0 if edge in instrumented_arcs else 1.6 for edge in edges]
@@ -572,7 +664,7 @@ def _draw_metric_network(
             arrowsize=16,
             width=edge_widths,
         )
-        _add_metric_colorbar(ax, edge_colors, plt.cm.viridis, "arc metric")
+        _add_metric_colorbar(ax, edge_colors, plt.cm.viridis, arc_metric_name if arc_metric_name else "arc metric")
 
     if node_values is None:
         nx.draw_networkx_nodes(
@@ -596,7 +688,7 @@ def _draw_metric_network(
             node_size=560,
             linewidths=1.2,
         )
-        _add_metric_colorbar(ax, node_colors, plt.cm.plasma, "node metric")
+        _add_metric_colorbar(ax, node_colors, plt.cm.plasma, node_metric_name if node_metric_name else "node metric")
 
     if show_labels:
         nx.draw_networkx_labels(graph, positions, ax=ax, font_size=9)
