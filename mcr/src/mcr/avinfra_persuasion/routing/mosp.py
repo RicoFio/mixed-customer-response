@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .datastructures import (
+from ..datastructures import (
     Arc,
     BenpyModel,
     MetricName,
@@ -17,7 +17,7 @@ from .datastructures import (
     Turn,
     World,
 )
-from .opt import (
+from ..opt import (
     EXPANDED_END,
     EXPANDED_START,
     RoutingSolution,
@@ -32,7 +32,7 @@ from .opt import (
 )
 
 try:
-    from . import _mosp_ext
+    from . import _mosp_ext # type: ignore
 except ImportError as exc:  # pragma: no cover - exercised only before extension build.
     _mosp_ext = None
     _EXTENSION_IMPORT_ERROR: ImportError | None = exc

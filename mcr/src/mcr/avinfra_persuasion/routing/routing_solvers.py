@@ -4,9 +4,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
-from .datastructures import Node, Scenario, World
+from ..datastructures import Node, Scenario, World
 from .mosp import DEFAULT_SCALE, solve_mosp_routes
-from .opt import (
+from ..opt import (
     RoutingSolution,
     build_benpy_model_sample_average,
     build_turn_state_benpy_model_sample_average,

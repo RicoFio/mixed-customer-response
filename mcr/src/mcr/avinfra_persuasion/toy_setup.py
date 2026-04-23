@@ -31,7 +31,7 @@ from .opt import (
     build_benpy_model_sample_average,
     build_turn_state_benpy_model_sample_average,
 )
-from .routing_solvers import (
+from .routing.routing_solvers import (
     RoutingSolverConfig,
     RoutingSolverConfigLike,
     coerce_routing_solver_config,

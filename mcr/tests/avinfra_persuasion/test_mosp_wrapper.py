@@ -11,7 +11,7 @@ from mcr.avinfra_persuasion.datastructures import (
     Scenario,
     World,
 )
-from mcr.avinfra_persuasion.mosp import UINT32_MAX, solve_mosp_routes
+from mcr.avinfra_persuasion.routing.mosp import UINT32_MAX, solve_mosp_routes
 from mcr.avinfra_persuasion.orders import total_order_from_list
 
 

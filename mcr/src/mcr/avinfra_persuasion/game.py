@@ -18,7 +18,7 @@ from .opt import (
     RoutingSolution,
     RoutingSolutionPoint,
 )
-from .routing_solvers import (
+from .routing.routing_solvers import (
     RoutingSolverConfig,
     RoutingSolverConfigLike,
     solve_routes,

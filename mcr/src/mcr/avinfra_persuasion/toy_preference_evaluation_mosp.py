@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 
 from .orders import PartialOrder, Relation
 from .game import Receiver, Preference
-from .routing_solvers import RoutingSolverConfig
+from .routing.routing_solvers import RoutingSolverConfig
 from .datastructures import (
     World,
     FinitePrior,

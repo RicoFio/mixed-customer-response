@@ -1,13 +1,99 @@
 """
-Partial order of all possible partial orders on a given set.
-Warning: This is computationally intensive for sets larger than size 5.
-From https://github.com/mit-zardini-lab/PosetalGameLearningPriority/blob/main/order_of_priority.py
+Module for handling pre-orders and partial orders.
+From https://github.com/mit-zardini-lab/PosetalGameLearningPriority/blob/main/orders.py
 By Yujun Huang
 """
-from typing import Set, Any, Iterator, List, Tuple
-import networkx as nx
+from __future__ import annotations
 
-from .orders import PartialOrder
+from itertools import combinations
+from typing import Any, Iterator
+from typing import Set, Tuple, List
+
+import networkx as nx
+from .pre_order import PreOrder, Relation
+
+
+class PartialOrder(PreOrder):
+    """
+    Represents a partial order (reflexive, transitive, antisymmetric).
+    """
+
+    def _validate(self) -> None:
+        PreOrder._validate(self)
+
+        for a, b in combinations(self.elements, 2):
+            if (a, b) in self.relations and (b, a) in self.relations and a != b:
+                raise ValueError(
+                    "Pre-order not antisymmetric: "
+                    f"both ({a}, {b}) and ({b}, {a}) for a != b"
+                )
+
+    def __repr__(self) -> str:
+        edges_to_show = [
+            (next(iter(u)), next(iter(v)))
+            for u, v in self.hasse_diagram.edges()
+        ]
+        return f"PartialOrder(Elements: {self.elements}, Hasse edges: {edges_to_show})"
+
+
+def total_order_from_list(elements: list[Any]) -> PartialOrder:
+    """Create a total order from a list where the first element is smallest."""
+    relations: set[Relation] = set()
+
+    for i, a in enumerate(elements):
+        for j, b in enumerate(elements):
+            if i <= j:
+                relations.add((a, b))
+    return PartialOrder(set(elements), relations)
+
+
+def completions_of_poset(poset: PartialOrder) -> Iterator[PartialOrder]:
+    """
+    Generate all total order completions of the given partial order.
+    Note: This can be computationally expensive for large posets.
+    """
+    node_to_elem = {}
+
+    for node in poset.hasse_diagram.nodes():
+        if isinstance(node, frozenset):
+            if len(node) != 1:
+                raise ValueError("PartialOrder has non-singleton node in Hasse diagram")
+            elem = next(iter(node))
+        else:
+            elem = node
+        node_to_elem[node] = elem
+
+    adj = {node_to_elem[n]: set() for n in poset.hasse_diagram.nodes()}
+    indeg = {node_to_elem[n]: 0 for n in poset.hasse_diagram.nodes()}
+
+    for u, v in poset.hasse_diagram.edges():
+        ue = node_to_elem[u]
+        ve = node_to_elem[v]
+        if ve not in adj[ue]:
+            adj[ue].add(ve)
+            indeg[ve] += 1
+
+    def _backtrack(
+        order: list[Any],
+        available: set[Any],
+        current_indeg: dict[Any, int],
+    ) -> Iterator[PartialOrder]:
+        if len(order) == len(adj):
+            yield total_order_from_list(order)
+            return
+
+        for elem in list(available):
+            new_available = set(available)
+            new_available.remove(elem)
+            new_indeg = dict(current_indeg)
+            for succ in adj[elem]:
+                new_indeg[succ] -= 1
+                if new_indeg[succ] == 0:
+                    new_available.add(succ)
+            yield from _backtrack(order + [elem], new_available, new_indeg)
+
+    initial_available = {e for e, d in indeg.items() if d == 0}
+    yield from _backtrack([], initial_available, indeg)
 
 
 def _dag_transitive_closure(nodes: List[Any], edges: List[Tuple[Any, Any]]) -> Set[Tuple[Any, Any]]:
