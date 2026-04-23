@@ -6,10 +6,13 @@
     "configurations": [
         
         {
-            "name": "Python Debugger: Module",
+            "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
-            "module": "mcr.avinfra_persuasion.toy_setup"
+            "program": "${workspaceFolder}/run_as_module.py",
+            "args": ["${file}"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
         }
     ]
 }
