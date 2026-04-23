@@ -3,6 +3,7 @@ from matplotlib import pyplot as plt
 
 from .orders import PartialOrder, Relation
 from .game import Receiver, Preference
+from .routing_solvers import RoutingSolverConfig
 from .datastructures import (
     World,
     FinitePrior,
@@ -22,21 +23,20 @@ def compare_individual_choices(world: World, individuals: Mapping[str, Receiver]
     }
     
     solution = individuals["human"]._compute_paths()
-    
     fig, ax = plt.subplots(1,1)
     ax.set_xlim(4,12)
     ax.set_ylim(-1,6)
-    fig.suptitle("BenSolve", fontweight="bold")
+    fig.suptitle("MOSP", fontweight="bold")
     plot_pareto_frontier(
         solution,
         x_metric=MetricName.TRAVEL_TIME,
         y_metric=MetricName.HAZARD,
         objective_names=solution.objective_names,
         ax=ax,
-        highlighting={
-            "human": individuals['human'].get_path_choice().label,
-            "av": individuals['av'].get_path_choice().label
-        }
+        # highlighting={
+        #     "human": individuals['human'].get_path_choice().label,
+        #     "av": individuals['av'].get_path_choice().label
+        # }
     )
     
     # _, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
@@ -84,6 +84,7 @@ if __name__ == "__main__":
     world = make_toy2_world()
     origin_node = (0, 0)
     destination_node = (4, 4)
+    routing_solver_config = RoutingSolverConfig(backend="mosp")
 
     prior = FinitePrior(
         "toy_setup",
@@ -117,6 +118,7 @@ if __name__ == "__main__":
         preference=human_preference,
         prior=prior,
         world=world,
+        routing_solver_config=routing_solver_config,
     )
 
     av_preference = Preference(
@@ -144,6 +146,7 @@ if __name__ == "__main__":
         preference=av_preference,
         prior=prior,
         world=world,
+        routing_solver_config=routing_solver_config,
     )
 
     individuals = {
