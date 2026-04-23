@@ -21,7 +21,11 @@ typedef uint32_t CostType;
 typedef short Dimension;
 
 #define GENERATE_MISSING_COST_COMPONENTS_UNIF_RANDOM
+#ifdef MCR_MOSP_DIM
+constexpr Dimension DIM = MCR_MOSP_DIM;
+#else
 constexpr Dimension DIM = 4;
+#endif
 
 constexpr Node INVALID_NODE = std::numeric_limits<Node>::max();
 constexpr NeighborhoodSize MAX_DEGREE = std::numeric_limits<NeighborhoodSize>::max();

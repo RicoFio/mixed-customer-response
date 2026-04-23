@@ -12,6 +12,7 @@
 struct Arc {
     Arc() = default;
     Arc(const Node targetId, const CostArray& c, const ArcId id);
+    Arc(const Arc& other) = default;
 
     void operator=(const Arc& other) {
         this->n = other.n;

@@ -5,6 +5,8 @@
 #ifndef MDA_STAR_H
 #define MDA_STAR_H
 
+#include <algorithm>
+#include <memory>
 #include <unordered_map>
 
 #include "../../datastructures/includes/BinaryHeapMosp.h"
@@ -18,6 +20,12 @@
 struct LastProcessedPathInfo {
     size_t index{0};
     bool nclChecked{false};
+};
+
+struct MdaExtractedPath {
+    CostArray costs{generate(0)};
+    std::vector<Node> nodeIds;
+    std::vector<ArcId> arcIds;
 };
 
 /**
@@ -132,7 +140,8 @@ public:
         auto start_bda = std::chrono::high_resolution_clock::now();
         Node target = G.target;
 
-        Pool<Label>* labelsPool = new Pool<Label>();
+        this->labelsPool = std::make_unique<Pool<Label>>();
+        Pool<Label>* labelsPool = this->labelsPool.get();
 
         Label* startLabel = labelsPool->newItem();
         CostArray initialCostVector{generate(0)};
@@ -175,6 +184,35 @@ public:
         solutionData.maxHeapSize = heap.maxSize();
     }
 
+    std::vector<MdaExtractedPath> extractPaths() const {
+        std::vector<MdaExtractedPath> extractedPaths;
+        extractedPaths.reserve(this->solutions.solutions.size());
+
+        for (const Label* solution : this->solutions.solutions) {
+            MdaExtractedPath path;
+            path.costs = solution->c;
+
+            const Label* currentLabel = solution;
+            while (currentLabel != nullptr) {
+                path.nodeIds.push_back(currentLabel->n);
+                if (currentLabel->predArcId == INVALID_ARC) {
+                    break;
+                }
+
+                const Arc& predArc = this->G.incomingArcs(currentLabel->n)[currentLabel->predArcId];
+                path.arcIds.push_back(predArc.id);
+                const auto& predecessorFront = this->minCompleteSets[predArc.n];
+                currentLabel = predecessorFront[currentLabel->permanentIndexOfSubpath];
+            }
+
+            std::reverse(path.nodeIds.begin(), path.nodeIds.end());
+            std::reverse(path.arcIds.begin(), path.arcIds.end());
+            extractedPaths.push_back(std::move(path));
+        }
+
+        return extractedPaths;
+    }
+
     size_t memory(size_t maxHeapSize, size_t labelsPoolSize) const {
         size_t heapTrackingSize = maxHeapSize*sizeof(Label*);
         size_t epxloredPathsSize = labelsPoolSize*sizeof(Label);
@@ -211,6 +249,7 @@ private:
     const std::vector<CostArray>& potential;
     std::vector<LastProcessedPathInfo> lastProcessedPath;
     std::vector<MinCompleteSet> minCompleteSets;
+    std::unique_ptr<Pool<Label>> labelsPool;
     size_t sols{0};
     size_t permanents{0};
     size_t maxHeapLabelsSize{0};
