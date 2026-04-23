@@ -1,3 +1,12 @@
+[build-system]
+requires = [
+    "setuptools>=82.0.1",
+    "wheel",
+    "Cython>=3.2.4",
+    "numpy>=2.4.3",
+]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mcr"
 version = "0.1.0"
@@ -13,3 +22,12 @@ dependencies = [
     "pandas>=3.0.1",
     "scipy>=1.17.1",
 ]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"mcr.avinfra_persuasion" = ["MOSP_NOTICE.md"]

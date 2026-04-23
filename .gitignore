@@ -167,6 +167,7 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+mcr/src/mcr/avinfra_persuasion/_mosp_ext.cpp
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
@@ -208,4 +209,3 @@ __marimo__/
 
 # Removing reference code 
 game_ref
-mod
