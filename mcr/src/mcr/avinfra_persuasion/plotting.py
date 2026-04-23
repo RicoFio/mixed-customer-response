@@ -241,8 +241,8 @@ def plot_pareto_frontier(
 
     ax.margins(x=0.08, y=0.08)
     if connect and len(frontier_xy) > 0:
-        _draw_axis_connected_frontier(ax=ax, frontier_xy=frontier_xy)
-        # _draw_axis_aligned_frontier(ax=ax, frontier_xy=frontier_xy)
+        # _draw_axis_connected_frontier(ax=ax, frontier_xy=frontier_xy)
+        _draw_axis_aligned_frontier(ax=ax, frontier_xy=frontier_xy)
 
     highlight_items = _normalize_highlight_spec(
         highlight=highlight,
@@ -274,8 +274,8 @@ def plot_pareto_frontier(
                 fontsize=8,
             )
 
-    x_label = _objective_label(x_metric, objective_names)
-    y_label = _objective_label(y_metric, objective_names)
+    x_label = _objective_label(x_metric, objective_names).replace("_", " ")
+    y_label = _objective_label(y_metric, objective_names).replace("_", " ")
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(f"Pareto frontier: {x_label} vs {y_label}")
@@ -340,43 +340,43 @@ def _pareto_point_labels(points: Any, n_points: int) -> tuple[str, ...]:
     return tuple(_solution_label(point_idx) for point_idx in range(n_points))
 
 
-def _draw_axis_connected_frontier(ax: Axes, frontier_xy: np.ndarray) -> None:
-    """"""
-    x_limits = ax.get_xlim()
-    y_limits = ax.get_ylim()
-    x_right = x_limits[1]
-    y_top = y_limits[1]
+# def _draw_axis_connected_frontier(ax: Axes, frontier_xy: np.ndarray) -> None:
+#     """"""
+#     x_limits = ax.get_xlim()
+#     y_limits = ax.get_ylim()
+#     x_right = x_limits[1]
+#     y_top = y_limits[1]
     
-    ax.plot(
-        frontier_xy[:, 0],
-        frontier_xy[:, 1],
-        color="#1f77b4",
-        linewidth=1.4,
-        alpha=0.85,
-        zorder=2,
-        label="frontier",
-    )
-    # Plot outer frontier
-    ax.plot(
-        [frontier_xy[0, 0], frontier_xy[0, 0]],
-        [y_top, frontier_xy[0, 1]],
-        color="#1f77b4",
-        linewidth=1.4,
-        alpha=0.85,
-        zorder=2,
-        label="_nolegend_",
-    )
-    ax.plot(
-        [frontier_xy[-1, 0], x_right],
-        [frontier_xy[-1, 1], frontier_xy[-1, 1]],
-        color="#1f77b4",
-        linewidth=1.4,
-        alpha=0.85,
-        zorder=2,
-        label="_nolegend_",
-    )
-    ax.set_xlim(x_limits)
-    ax.set_ylim(y_limits)
+#     ax.plot(
+#         frontier_xy[:, 0],
+#         frontier_xy[:, 1],
+#         color="#1f77b4",
+#         linewidth=1.4,
+#         alpha=0.85,
+#         zorder=2,
+#         label="frontier",
+#     )
+#     # Plot outer frontier
+#     ax.plot(
+#         [frontier_xy[0, 0], frontier_xy[0, 0]],
+#         [y_top, frontier_xy[0, 1]],
+#         color="#1f77b4",
+#         linewidth=1.4,
+#         alpha=0.85,
+#         zorder=2,
+#         label="_nolegend_",
+#     )
+#     ax.plot(
+#         [frontier_xy[-1, 0], x_right],
+#         [frontier_xy[-1, 1], frontier_xy[-1, 1]],
+#         color="#1f77b4",
+#         linewidth=1.4,
+#         alpha=0.85,
+#         zorder=2,
+#         label="_nolegend_",
+#     )
+#     ax.set_xlim(x_limits)
+#     ax.set_ylim(y_limits)
     
     
 
@@ -414,12 +414,12 @@ def _draw_axis_aligned_frontier(ax: Axes, frontier_xy: np.ndarray) -> None:
     ax.set_ylim(y_limits)
 
 
-def _nondominated_minimization_mask(values: np.ndarray) -> np.ndarray:
+def _nondominated_minimization_mask(values: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     """Return points not dominated by another point under minimization."""
     mask = np.ones(values.shape[0], dtype=bool)
     for point_idx, point in enumerate(values):
-        no_worse = np.all(values <= point, axis=1)
-        strictly_better = np.any(values < point, axis=1)
+        no_worse = np.all(values <= point + tol, axis=1)
+        strictly_better = np.any(values < point - tol, axis=1)
         mask[point_idx] = not bool(np.any(no_worse & strictly_better))
     return mask
 
