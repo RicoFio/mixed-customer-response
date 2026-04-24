@@ -2,7 +2,7 @@ from typing import Mapping
 from matplotlib import pyplot as plt
 
 from .orders import PartialOrder, Relation
-from .game import Receiver, Preference
+from .bp.game import Receiver, Preference
 from .routing.routing_solvers import RoutingSolverConfig
 from .datastructures import (
     World,

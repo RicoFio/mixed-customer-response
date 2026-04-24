@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Mapping, TypeAlias
 
 import numpy as np
 
-from .datastructures import (
+from ..datastructures import (
     Arc,
     Demand,
     Individual,
@@ -11,46 +13,23 @@ from .datastructures import (
     Scenario,
     World,
     WorldBelief,
-    Prior
+    Prior,
 )
-from .orders import PartialOrder, PreOrder
-from .opt import (
+from ..orders import PreOrder
+from ..opt import (
     RoutingSolution,
     RoutingSolutionPoint,
 )
-from .routing.routing_solvers import (
+from ..routing.routing_solvers import (
     RoutingSolverConfig,
     RoutingSolverConfigLike,
     solve_routes,
 )
+from .game import AVERAGE_SAMPLING, N_SCENARIOS, RNG_SEED, Preference
+from .senders import Sender
+from .signals import Signal
 
-TimeStep: TypeAlias = int
 ReceiverType: TypeAlias = str
-Preference: TypeAlias = PartialOrder
-
-RNG_SEED: int = 1
-N_SCENARIOS: int = 10
-AVERAGE_SAMPLING: bool = True
-
-
-@dataclass
-class Signal:
-    pass
-
-
-@dataclass
-class SignalPolicy:
-    pass
-
-
-@dataclass
-class Sender:
-    preference: Preference
-    prior: WorldBelief
-    world: World
-    signal_policy: SignalPolicy
-
-    _regret_history: list[float]
 
 
 @dataclass
@@ -61,7 +40,7 @@ class Receiver:
     prior: Prior
     world: World
     sender: Sender | None = None
-    belief: WorldBelief | None = None
+    belief: WorldBelief | Prior | None = None
     n_scenarios: int = N_SCENARIOS
     average_sampling: bool = AVERAGE_SAMPLING
     rng_seed: int | None = RNG_SEED
@@ -129,7 +108,7 @@ class Receiver:
         max_element = self._rng.choice(tuple(sorted(max_elements, key=str)))
         return solution.by_label(str(max_element))
 
-    def _current_belief(self) -> WorldBelief:
+    def _current_belief(self) -> WorldBelief | Prior:
         if self.belief is None:
             raise RuntimeError("Receiver has no internal belief.")
         return self.belief
@@ -198,22 +177,21 @@ class Receiver:
         }
 
 
-@dataclass
-class Game:
-    sender: Sender
-    receivers: list[Receiver]
-    world: World
-    public_prior: WorldBelief
-    horizon: TimeStep
-
-    current_step: TimeStep = 0
-
-    def step(self):
-        # First we sample from the world
-        # Then we have the receiver commit to a signaling policy
-        # We pass the sample of the world to the receiver and get back one message per receiver
-        # We pass the messages to the receivers, they update their beliefs and take an action
-        # We pass the actions to the current state of the world and receive the realized state of the world (congestion, travel times, emissions, etc.)
-        # We pass that back to both the sender and the receivers.
-        # The receiver updates their signaling policy (Not Implemented Yet).
-        pass
+class RouteChoiceReceiver(Receiver):
+    """
+    Similar to receiver but finds shortest paths on prior and then chooses
+    best route based on updated beliefs of the state.
+    """
+    
+    actions: RoutingSolution | None = None
+    
+    def _compute_paths(self) -> RoutingSolution:
+        if not self.actions:
+            self.actions = solve_routes(
+                world=self.world,
+                source=self.demand.origin,
+                target=self.demand.destination,
+                scenarios=[self.prior],
+                config=self.routing_solver_config,
+                use_average=self.average_sampling,
+            )

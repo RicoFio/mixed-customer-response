@@ -12,6 +12,7 @@ dependencies = [
     "networkx>=3.6.1",
     "pydantic>=2.13.0",
     "pytest>=9.0.3",
+    "ruff>=0.15.11",
 ]
 
 [tool.uv.workspace]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeAlias
@@ -37,6 +37,16 @@ class MetricName(str, Enum):
 
     def __str__(self) -> str:
         return self.value
+
+
+ArcScenarioOverrides: TypeAlias = (
+    Mapping[MetricName, Mapping[Arc, float]]
+    | Mapping[str, Mapping[Arc, float]]
+)
+NodeScenarioOverrides: TypeAlias = (
+    Mapping[MetricName, Mapping[Node, float]]
+    | Mapping[str, Mapping[Node, float]]
+)
 
 
 METRIC_SET = frozenset(MetricName)
@@ -491,10 +501,16 @@ class Scenario:
     policing: Mapping[Node, float]
     
     @classmethod
-    def from_world(cls, name: str, world: World) -> Scenario:
+    def from_world(
+        cls,
+        name: str,
+        world: World,
+        arc_overrides: ArcScenarioOverrides | None = None,
+        node_overrides: NodeScenarioOverrides | None = None,
+    ) -> Scenario:
         """Create a deterministic nominal scenario from a world."""
         zero_volumes = {arc: 0.0 for arc in world.A}
-        return cls(
+        scenario = cls(
             name=name,
             travel_time=dict(world.travel_time),
             discomfort=dict(world.discomfort),
@@ -503,27 +519,98 @@ class Scenario:
             emissions=world.network.get_actual_emissions(zero_volumes),
             policing=dict(world.policing),
         )
+        return scenario.with_overrides(
+            arc_overrides=arc_overrides,
+            node_overrides=node_overrides,
+        )
+
+    def with_overrides(
+        self,
+        *,
+        name: str | None = None,
+        arc_overrides: ArcScenarioOverrides | None = None,
+        node_overrides: NodeScenarioOverrides | None = None,
+    ) -> Scenario:
+        """Return a new scenario with selected arc or node metrics replaced."""
+        arc_metrics = {
+            MetricName.TRAVEL_TIME: dict(self.travel_time),
+            MetricName.DISCOMFORT: dict(self.discomfort),
+            MetricName.HAZARD: dict(self.hazard),
+            MetricName.COST: dict(self.cost),
+            MetricName.EMISSIONS: dict(self.emissions),
+        }
+        node_metrics = {
+            MetricName.POLICING: dict(self.policing),
+        }
+
+        for metric, updates in (arc_overrides or {}).items():
+            metric_name = MetricName.coerce(metric)
+            if metric_name not in arc_metrics:
+                raise ValueError(f"{metric_name.value!r} is not an arc scenario metric.")
+            _apply_metric_updates(
+                values=arc_metrics[metric_name],
+                updates=updates,
+                metric_name=metric_name.value,
+            )
+
+        for metric, updates in (node_overrides or {}).items():
+            metric_name = MetricName.coerce(metric)
+            if metric_name not in node_metrics:
+                raise ValueError(f"{metric_name.value!r} is not a node scenario metric.")
+            _apply_metric_updates(
+                values=node_metrics[metric_name],
+                updates=updates,
+                metric_name=metric_name.value,
+            )
+
+        return replace(
+            self,
+            name=self.name if name is None else name,
+            travel_time=arc_metrics[MetricName.TRAVEL_TIME],
+            discomfort=arc_metrics[MetricName.DISCOMFORT],
+            hazard=arc_metrics[MetricName.HAZARD],
+            cost=arc_metrics[MetricName.COST],
+            emissions=arc_metrics[MetricName.EMISSIONS],
+            policing=node_metrics[MetricName.POLICING],
+        )
 
 
-class WorldBelief(Protocol):
+def _apply_metric_updates(
+    values: dict[Any, float],
+    updates: Mapping[Any, float],
+    metric_name: str,
+) -> None:
+    extra_keys = set(updates) - set(values)
+    if extra_keys:
+        raise ValueError(
+            f"{metric_name!r} overrides reference unknown keys: {extra_keys!r}"
+        )
+    for key, value in updates.items():
+        values[key] = float(value)
+
+
+class Belief(Protocol):
     name: str
 
     def sample(self, n_samples: int, seed: int | None = None) -> list[Scenario]:
         ...
 
+
 @dataclass(frozen=True)
-class Prior:
-    name: str
-    
-    @abstractmethod
-    def sample(self, n_samples: int, seed: int | None = None) -> list[Scenario]:
-        pass
+class WorldBelief(Belief):
+    pass
+
+
+@dataclass(frozen=True)
+class Prior(Belief):
+    pass
 
 
 @dataclass(frozen=True)
 class FinitePrior(Prior):
     """Finite scenario prior sampled with replacement."""
 
+    name: str
     support: Mapping[str, Scenario]
     probabilities: Mapping[str, float]
 

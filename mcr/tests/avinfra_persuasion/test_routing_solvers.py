@@ -12,7 +12,7 @@ from mcr.avinfra_persuasion.datastructures import (
     Scenario,
     World,
 )
-from mcr.avinfra_persuasion.game import Receiver
+from mcr.avinfra_persuasion.bp.receivers import Receiver
 from mcr.avinfra_persuasion.orders import total_order_from_list
 from mcr.avinfra_persuasion.routing.routing_solvers import (
     RoutingSolverConfig,

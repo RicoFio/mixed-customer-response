@@ -36,6 +36,9 @@ class PreOrder:
         self._build_hasse_diagram()
         self._validate()
 
+    def is_degenerate(self) -> bool:
+        return len(self.elements) == 1 and len(self.relations) == 1
+
     def _transitive_closure(self) -> set[Relation]:
         """Compute the transitive closure of the current relations."""
         closure = set(self.relations)

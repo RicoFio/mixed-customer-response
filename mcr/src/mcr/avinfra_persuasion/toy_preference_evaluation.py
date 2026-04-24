@@ -2,7 +2,7 @@ from typing import Mapping
 from matplotlib import pyplot as plt
 
 from .orders import PartialOrder, Relation
-from .game import Receiver, Preference
+from .bp.game import Receiver, Preference
 from .datastructures import (
     World,
     FinitePrior,
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     destination_node = (4, 4)
 
     prior = FinitePrior(
-        "toy_setup",
+        name="toy_setup",
         support={"toy_scenario": Scenario.from_world("toy_scenario", world=world)},
         probabilities={"toy_scenario": 1.0},
     )
