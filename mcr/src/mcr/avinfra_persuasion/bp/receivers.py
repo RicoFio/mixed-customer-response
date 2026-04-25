@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Mapping, TypeAlias
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import TypeAlias
 
 import numpy as np
 
 from ..datastructures import (
     Arc,
     Demand,
+    FinitePrior,
     Individual,
     MetricName,
     Scenario,
@@ -73,8 +75,34 @@ class Receiver:
         return self.individual.demand
 
     def update_internal_belief(self, signal: Signal) -> None:
-        # Do a Bayesian update of the internal belief given the provided signal 
-        pass
+        if not signal.value:
+            return
+
+        current_belief = self._current_belief()
+        if not isinstance(current_belief, FinitePrior):
+            raise NotImplementedError(
+                "Exact Bayesian signal updates currently require a FinitePrior."
+            )
+
+        posterior_support: dict[str, Scenario] = {}
+        posterior_probabilities: dict[str, float] = {}
+        for scenario_name, scenario in current_belief.support.items():
+            if self._scenario_matches_signal(scenario=scenario, signal=signal):
+                posterior_support[scenario_name] = scenario
+                posterior_probabilities[scenario_name] = (
+                    current_belief.probabilities[scenario_name]
+                )
+
+        if not posterior_support:
+            raise ValueError(
+                "Signal is inconsistent with the receiver belief support."
+            )
+
+        self.belief = FinitePrior(
+            name=f"{current_belief.name}_posterior",
+            support=posterior_support,
+            probabilities=posterior_probabilities,
+        )
 
     def _compute_paths(self) -> RoutingSolution:
         scenarios = self._current_belief().sample(
@@ -112,6 +140,41 @@ class Receiver:
         if self.belief is None:
             raise RuntimeError("Receiver has no internal belief.")
         return self.belief
+
+    def _scenario_matches_signal(
+        self,
+        *,
+        scenario: Scenario,
+        signal: Signal,
+    ) -> bool:
+        for metric, observed_value in signal.value.items():
+            try:
+                realized_value = getattr(scenario, metric.value)
+            except AttributeError as exc:
+                raise NotImplementedError(
+                    f"Scenario observations for {metric.value!r} are not supported."
+                ) from exc
+            if not self._values_match(
+                realized_value=realized_value,
+                observed_value=observed_value,
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _values_match(
+        *,
+        realized_value: object,
+        observed_value: object,
+    ) -> bool:
+        if isinstance(observed_value, Mapping):
+            if not isinstance(realized_value, Mapping):
+                return False
+            return all(
+                key in realized_value and realized_value[key] == value
+                for key, value in observed_value.items()
+            )
+        return realized_value == observed_value
 
     def _validate_demand(self) -> None:
         if self.demand.origin not in self.world.V:
@@ -177,21 +240,86 @@ class Receiver:
         }
 
 
-class RouteChoiceReceiver(Receiver):
+@dataclass
+class PriorRouteChoiceReceiver(Receiver):
     """
     Similar to receiver but finds shortest paths on prior and then chooses
     best route based on updated beliefs of the state.
     """
-    
-    actions: RoutingSolution | None = None
-    
+
+    _cached_prior_solution: RoutingSolution | None = field(
+        init=False,
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
     def _compute_paths(self) -> RoutingSolution:
-        if not self.actions:
-            self.actions = solve_routes(
+        if self._cached_prior_solution is None:
+            if isinstance(self.prior, FinitePrior):
+                scenarios = tuple(self.prior.support.values())
+            else:
+                scenarios = self.prior.sample(
+                    n_samples=self.n_scenarios,
+                    seed=self.rng_seed,
+                )
+            self._cached_prior_solution = solve_routes(
                 world=self.world,
                 source=self.demand.origin,
                 target=self.demand.destination,
-                scenarios=[self.prior],
+                scenarios=scenarios,
                 config=self.routing_solver_config,
                 use_average=self.average_sampling,
             )
+        return self._rescore_cached_paths(self._cached_prior_solution)
+
+    def _rescore_cached_paths(
+        self,
+        cached_solution: RoutingSolution,
+    ) -> RoutingSolution:
+        rescored_points = tuple(
+            replace(
+                point,
+                objective_values=self._expected_objective_values_for_path(point.path),
+            )
+            for point in cached_solution.points
+        )
+        return RoutingSolution(
+            raw_solution=cached_solution.raw_solution,
+            model=cached_solution.model,
+            points=rescored_points,
+        )
+
+    def _expected_objective_values_for_path(
+        self,
+        path: tuple[Arc, ...],
+    ) -> Mapping[MetricName, float]:
+        belief = self._current_belief()
+        totals = {metric: 0.0 for metric in MetricName}
+
+        if isinstance(belief, FinitePrior):
+            weighted_scenarios = tuple(
+                (belief.probabilities[name], scenario)
+                for name, scenario in belief.support.items()
+            )
+        else:
+            sampled_scenarios = belief.sample(
+                n_samples=self.n_scenarios,
+                seed=self.rng_seed,
+            )
+            scenario_weight = (
+                1.0 / len(sampled_scenarios)
+                if self.average_sampling
+                else 1.0
+            )
+            weighted_scenarios = tuple(
+                (scenario_weight, scenario)
+                for scenario in sampled_scenarios
+            )
+
+        for scenario_weight, scenario in weighted_scenarios:
+            path_totals = self._path_metric_totals(scenario=scenario, path=path)
+            for metric, value in path_totals.items():
+                totals[metric] += scenario_weight * value
+
+        return totals

@@ -20,6 +20,8 @@ def create_sample_graph() -> InfrastructureGraph:
     ]
     G.add_nodes_from(grid_nodes)
     instrumented_edges: set[Arc] = {
+        ((0, 0), (0, 1)), 
+        ((0, 1), (1, 1)),
         ((0, 0), (1, 0)), 
         ((1, 0), (1, 1)),
     }
@@ -52,7 +54,7 @@ def create_sample_graph() -> InfrastructureGraph:
         nominal_hazards=_arc_attr('hazard'),
         nominal_cost=_arc_attr('cost'),
         nominal_policing={
-            (1, 0): 1,
-            (1, 1): 1
+            node: float(node in {(1, 0), (1, 1)})
+            for node in grid_nodes
         },
     )

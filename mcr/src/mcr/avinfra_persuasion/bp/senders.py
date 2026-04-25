@@ -1,7 +1,25 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
 from dataclasses import dataclass
-from ..datastructures import Prior, World, MetricName
-from .signals import SignalPolicy
+
+import numpy as np
+
+from ..datastructures import MetricName, Prior, Scenario, World
 from .game import Preference
+from .signals import MaskSignal, Signal, SignalPolicy
+
+
+ARC_SIGNAL_METRICS = frozenset(
+    {
+        MetricName.TRAVEL_TIME,
+        MetricName.DISCOMFORT,
+        MetricName.HAZARD,
+        MetricName.COST,
+        MetricName.EMISSIONS,
+    }
+)
+NODE_SIGNAL_METRICS = frozenset({MetricName.POLICING})
 
 
 @dataclass
@@ -11,14 +29,81 @@ class Sender:
     preference: Preference
     signal_policy: SignalPolicy
 
+    def emit_signal(
+        self,
+        realized_scenario: Scenario,
+        rng: np.random.Generator | None = None,
+    ) -> Signal:
+        sampled_signal = self.signal_policy.sample(rng=rng)
+        if isinstance(sampled_signal, MaskSignal):
+            return self.materialize_signal(
+                mask=sampled_signal.metrics,
+                realized_scenario=realized_scenario,
+            )
+        raise NotImplementedError(
+            f"Unsupported signal type: {type(sampled_signal).__name__!r}."
+        )
+
+    def materialize_signal(
+        self,
+        mask: frozenset[MetricName],
+        realized_scenario: Scenario,
+    ) -> MaskSignal:
+        signal = MaskSignal(metrics=mask)
+        observed_values: dict[MetricName, Mapping[object, float]] = {}
+        instrumented_nodes = {
+            node
+            for arc in self.world.I
+            for node in arc
+        }
+
+        for metric in signal.metrics:
+            if metric in ARC_SIGNAL_METRICS:
+                metric_values = getattr(realized_scenario, metric.value)
+                observed_values[metric] = {
+                    arc: metric_values[arc]
+                    for arc in self.world.I
+                }
+                continue
+
+            if metric in NODE_SIGNAL_METRICS:
+                metric_values = getattr(realized_scenario, metric.value)
+                observed_values[metric] = {
+                    node: metric_values[node]
+                    for node in instrumented_nodes
+                }
+                continue
+
+            raise NotImplementedError(
+                "MaskSignal currently supports only realized arc and node metrics, "
+                f"got {metric.value!r}."
+            )
+
+        return MaskSignal(metrics=signal.metrics, value=observed_values)
+
+    def _materialize_mask_signal(
+        self,
+        *,
+        signal: MaskSignal,
+        realized_scenario: Scenario,
+    ) -> MaskSignal:
+        return self.materialize_signal(
+            mask=signal.metrics,
+            realized_scenario=realized_scenario,
+        )
+
+    def expected_metrics(self, realized_world):
+        # Given the realized world, obtain the total metrics across the entire network
+        raise NotImplementedError()
 
 @dataclass
 class ScalarSender(Sender):
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.preference.is_degenerate():
             raise ValueError(
-                "A ScalarSender can only consider one metric. Preference needs to be `degenerate`"
+                "A ScalarSender can only consider one metric. Preference needs "
+                "to be `degenerate`."
             )
 
 

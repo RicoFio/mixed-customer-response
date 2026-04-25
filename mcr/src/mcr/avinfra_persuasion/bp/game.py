@@ -31,7 +31,7 @@ class Game(Protocol):
 
 
 @dataclass
-class OfflineGame(Game, Protocol):
+class ConvergenceGame(Game, Protocol):
     pass
 
 

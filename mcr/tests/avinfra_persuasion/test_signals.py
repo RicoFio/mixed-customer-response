@@ -68,3 +68,4 @@ def test_mask_signal_policy_samples_mask_with_seeded_rng() -> None:
     assert signal.metrics == frozenset(
         {MetricName.TRAVEL_TIME, MetricName.COST}
     )
+    assert signal.value == {}

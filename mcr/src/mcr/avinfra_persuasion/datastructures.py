@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from abc import abstractmethod
-
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from enum import Enum
@@ -346,6 +344,8 @@ class World:
     network: InfrastructureGraph
     individuals: frozenset[Individual] = field(default_factory=frozenset)
     normalized_population: bool = False
+    
+    # Ordered elements for later observation
     ordered_V: tuple[Node, ...] = field(init=False, repr=False)
     ordered_A: tuple[Arc, ...] = field(init=False, repr=False)
     ordered_L: tuple[Turn, ...] = field(init=False, repr=False)

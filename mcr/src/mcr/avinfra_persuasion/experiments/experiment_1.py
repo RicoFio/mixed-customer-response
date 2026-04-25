@@ -1,152 +1,719 @@
 """
-In this experiment we consider:
-- World
-    - Is a grid world with information about 
-- A finite set of priors with support
-- A single sender
-    - With a scalar utility metric
-    - The sender only has to choose the probability of sending or not sending
-- A single receiver
-    - With a posetal preference
-    - Routing based on the prior
-    - Route selection based on the posterior
+Finite-prior toy experiment for independent Bernoulli disclosure by metric.
+
+The sender chooses one disclosure probability per metric. For each realized
+scenario, an independent mask is sampled, the receiver conditions on the
+revealed network values, and then chooses a route. The sender policy is
+optimized with the same Adam + finite-difference pattern as the basic
+Bayesian persuasion toy, but on top of the routing model.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 
-from ..bp.game import OfflineGame, Preference
+from ..bp.game import ConvergenceGame, Preference
 from ..bp.receivers import Receiver
 from ..bp.senders import ScalarSender, Sender
-from ..bp.signals import MaskSignalPolicy
+from ..bp.signals import MaskSignalPolicy, Signal
 from ..datastructures import (
     Arc,
     Demand,
-    Prior,
     FinitePrior,
     Individual,
     MetricName,
     Node,
+    Prior,
     Scenario,
     World,
 )
 from ..networks.toy_3 import create_sample_graph
+from ..opt import RoutingSolution, RoutingSolutionPoint
+from ..routing.routing_solvers import solve_routes
+
+from .helpers import (
+    SignalObservationKey,
+    scenario_matches_signal,
+    path_metric_totals,
+    expected_path_metric_totals,
+    sorted_metrics,
+    canonical_signal_key,
+    format_signal_key,
+    format_mask,
+    format_posterior,
+)
+
+from .plotting import plot_policy_learning
+from matplotlib import pyplot as plt
 
 
-class GameOne(OfflineGame):
+def build_informative_prior(world: World) -> FinitePrior:
+    source_right = ((0, 0), (0, 1))
+    right_target = ((0, 1), (1, 1))
+    source_to_bottom = ((0, 0), (1, 0))
+    bottom_to_target = ((1, 0), (1, 1))
+
+    base_scenario = Scenario.from_world("base", world)
+
+    good = base_scenario.with_overrides(
+        name="instrumented_good",
+        arc_overrides={
+            MetricName.TRAVEL_TIME: {
+                source_right: 0.25,
+                right_target: 0.25,
+                source_to_bottom: 1.0,
+                bottom_to_target: 1.0,
+            },
+            MetricName.HAZARD: {
+                source_right: 1.0,
+                right_target: 1.0,
+                source_to_bottom: 0.0,
+                bottom_to_target: 0.0,
+            },
+            MetricName.COST: {
+                source_right: 2.0,
+                right_target: 2.0,
+                source_to_bottom: 0.0,
+                bottom_to_target: 0.0,
+            },
+            MetricName.EMISSIONS: {
+                source_right: 1.0,
+                right_target: 1.0,
+                source_to_bottom: 0.5,
+                bottom_to_target: 0.5,
+            },
+        },
+        node_overrides={
+            MetricName.POLICING: {
+                (0, 0): 0.0,
+                (1, 0): 0.0,
+                (1, 1): 0.0,
+            }
+        },
+    )
+    bad = base_scenario.with_overrides(
+        name="instrumented_bad",
+        arc_overrides={
+            MetricName.TRAVEL_TIME: {
+                source_right: 2.5,
+                right_target: 2.5,
+                source_to_bottom: 1.0,
+                bottom_to_target: 1.0,
+            },
+            MetricName.HAZARD: {
+                source_right: 1.0,
+                right_target: 1.0,
+                source_to_bottom: 1.0,
+                bottom_to_target: 1.0,
+            },
+            MetricName.COST: {
+                source_right: 1.0,
+                right_target: 1.0,
+                source_to_bottom: 0.0,
+                bottom_to_target: 0.0,
+            },
+            MetricName.EMISSIONS: {
+                source_right: 1.0,
+                right_target: 1.0,
+                source_to_bottom: 1.5,
+                bottom_to_target: 1.5,
+            },
+        },
+        node_overrides={
+            MetricName.POLICING: {
+                (0, 0): 1.0,
+                (1, 0): 1.0,
+                (1, 1): 1.0,
+            }
+        },
+    )
+
+    return FinitePrior(
+        name="prior",
+        support={
+            good.name: good,
+            bad.name: bad,
+        },
+        probabilities={
+            good.name: 0.5,
+            bad.name: 0.5,
+        },
+    )
+
+
+@dataclass
+class GameOne(ConvergenceGame):
     sender: Sender
     receivers: list[Receiver]
     world: World
     public_prior: Prior
     seed: int
 
+    _metric_order: tuple[MetricName, ...] = field(init=False, repr=False)
+    _all_masks: tuple[frozenset[MetricName], ...] = field(init=False, repr=False)
+    _logits: np.ndarray = field(init=False, repr=False)
+    _nominal_scenario: Scenario = field(init=False, repr=False)
+    _prior_solution: RoutingSolution = field(init=False, repr=False)
 
-if __name__ == "__main__":
+    def __post_init__(self) -> None:
+        if len(self.receivers) != 1:
+            raise ValueError("GameOne currently supports exactly one receiver.")
+        if not isinstance(self.public_prior, FinitePrior):
+            raise NotImplementedError("GameOne currently requires a FinitePrior.")
+        if not isinstance(self.sender.signal_policy, MaskSignalPolicy):
+            raise NotImplementedError(
+                "GameOne currently requires a MaskSignalPolicy sender."
+            )
+        if self.sender.prior != self.public_prior:
+            raise ValueError("Sender prior must match the public prior.")
+        if any(receiver.prior != self.public_prior for receiver in self.receivers):
+            raise ValueError("Receiver priors must match the public prior.")
+        if self.sender.world != self.world:
+            raise ValueError("Sender world must match the game world.")
+        if any(receiver.world != self.world for receiver in self.receivers):
+            raise ValueError("Receiver worlds must match the game world.")
+
+        self._metric_order = sorted_metrics(
+            self.sender.signal_policy.considered_metrics
+        )
+        self._all_masks = tuple(
+            frozenset(
+                metric
+                for idx, metric in enumerate(self._metric_order)
+                if bitmask & (1 << idx)
+            )
+            for bitmask in range(1 << len(self._metric_order))
+        )
+
+        probabilities = np.array(
+            [
+                self.sender.signal_policy.probability(metric)
+                for metric in self._metric_order
+            ],
+            dtype=float,
+        )
+        clipped = np.clip(probabilities, 1e-6, 1.0 - 1e-6)
+        self._logits = np.log(clipped / (1.0 - clipped))
+        self._nominal_scenario = Scenario.from_world("nominal", self.world)
+
+        self._prior_solution = solve_routes(
+            world=self.world,
+            source=self.receiver.demand.origin,
+            target=self.receiver.demand.destination,
+            scenarios=tuple(self.public_prior.support.values()),
+            config=self.receiver.routing_solver_config,
+            use_average=self.receiver.average_sampling,
+        )
+
+    @property
+    def receiver(self) -> Receiver:
+        return self.receivers[0]
+
+    @staticmethod
+    def _sigmoid(x: np.ndarray) -> np.ndarray:
+        return 1.0 / (1.0 + np.exp(-x))
+
+    def signaling_scheme(
+        self,
+        logits: np.ndarray | None = None,
+    ) -> dict[MetricName, float]:
+        logits = self._logits if logits is None else np.asarray(logits, dtype=float)
+        probabilities = self._sigmoid(logits)
+        return {
+            metric: float(probability)
+            for metric, probability in zip(self._metric_order, probabilities)
+        }
+
+    def _mask_probability(
+        self,
+        mask: frozenset[MetricName],
+        probabilities: Mapping[MetricName, float],
+    ) -> float:
+        mass = 1.0
+        for metric in self._metric_order:
+            probability = probabilities[metric]
+            mass *= probability if metric in mask else (1.0 - probability)
+        return mass
+
+    def _sender_metric(self) -> MetricName:
+        if len(self.sender.preference.elements) != 1:
+            raise ValueError("Sender preference must be degenerate.")
+        return next(iter(self.sender.preference.elements))
+
+    def posterior_from_signal(self, signal: Signal) -> FinitePrior:
+        if not signal.value:
+            return self.public_prior
+
+        posterior_support: dict[str, Scenario] = {}
+        posterior_probabilities: dict[str, float] = {}
+        for scenario_name, scenario in self.public_prior.support.items():
+            if scenario_matches_signal(scenario=scenario, signal=signal):
+                posterior_support[scenario_name] = scenario
+                posterior_probabilities[scenario_name] = (
+                    self.public_prior.probabilities[scenario_name]
+                )
+
+        if not posterior_support:
+            raise ValueError("Signal is inconsistent with the finite prior support.")
+
+        return FinitePrior(
+            name=f"{self.public_prior.name}_posterior",
+            support=posterior_support,
+            probabilities=posterior_probabilities,
+        )
+
+    def _rescored_solution(self, posterior: FinitePrior) -> RoutingSolution:
+        weighted_scenarios = tuple(
+            (posterior.probabilities[name], scenario)
+            for name, scenario in posterior.support.items()
+        )
+        rescored_points = tuple(
+            replace(
+                point,
+                objective_values=expected_path_metric_totals(
+                    world=self.world,
+                    path=point.path,
+                    weighted_scenarios=weighted_scenarios,
+                ),
+            )
+            for point in self._prior_solution.points
+        )
+        return RoutingSolution(
+            raw_solution=self._prior_solution.raw_solution,
+            model=self._prior_solution.model,
+            points=rescored_points,
+        )
+
+    def _choose_route_for_posterior(
+        self,
+        posterior: FinitePrior,
+    ) -> RoutingSolutionPoint:
+        solution = self._rescored_solution(posterior)
+        max_labels = solution.induced_preorder(self.receiver.preference).maximal_elements()
+        if len(max_labels) > 1:
+            sender_preorder = solution.induced_preorder(
+                preference=self.sender.preference,
+                labels=max_labels,
+            )
+            max_labels = sender_preorder.maximal_elements()
+        chosen_label = sorted(max_labels, key=str)[0]
+        return solution.by_label(chosen_label)
+
+    def choose_route(self, signal: Signal) -> RoutingSolutionPoint:
+        posterior = self.posterior_from_signal(signal)
+        return self._choose_route_for_posterior(posterior)
+
+    def _evaluate_signal(
+        self,
+        signal: Signal,
+        realized_scenario: Scenario,
+    ) -> dict[str, Any]:
+        posterior = self.posterior_from_signal(signal)
+        chosen_route = self._choose_route_for_posterior(posterior)
+        realized_metrics = path_metric_totals(
+            world=self.world,
+            scenario=realized_scenario,
+            path=chosen_route.path,
+        )
+        return {
+            "posterior": posterior,
+            "chosen_route": chosen_route,
+            "realized_metrics": realized_metrics,
+        }
+
+    def _scenario_mask_rows(
+        self,
+        probabilities: Mapping[MetricName, float],
+    ) -> tuple[dict[str, Any], ...]:
+        rows: list[dict[str, Any]] = []
+        for scenario_name, scenario in self.public_prior.support.items():
+            scenario_probability = self.public_prior.probabilities[scenario_name]
+            for mask in self._all_masks:
+                signal = self.sender.materialize_signal(
+                    mask=mask,
+                    realized_scenario=scenario,
+                )
+                rows.append(
+                    {
+                        "scenario_name": scenario_name,
+                        "scenario": scenario,
+                        "scenario_probability": scenario_probability,
+                        "mask": sorted_metrics(mask),
+                        "mask_probability": self._mask_probability(mask, probabilities),
+                        "signal": signal,
+                        "signal_key": canonical_signal_key(signal),
+                    }
+                )
+        return tuple(rows)
+
+    def bayes_plausibility_report(
+        self,
+        probabilities: Mapping[MetricName, float] | None = None,
+        rows: tuple[dict[str, Any], ...] | None = None,
+    ) -> dict[str, Any]:
+        if probabilities is None:
+            probabilities = self.signaling_scheme()
+        if rows is None:
+            rows = self._scenario_mask_rows(probabilities)
+
+        joint_by_signal: dict[SignalObservationKey, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )
+        signal_probabilities: dict[SignalObservationKey, float] = defaultdict(float)
+        for row in rows:
+            joint_probability = row["scenario_probability"] * row["mask_probability"]
+            signal_probabilities[row["signal_key"]] += joint_probability
+            joint_by_signal[row["signal_key"]][row["scenario_name"]] += joint_probability
+
+        reconstructed_prior = {
+            scenario_name: 0.0 for scenario_name in self.public_prior.support
+        }
+        report_rows: list[dict[str, Any]] = []
+        for signal_key in sorted(signal_probabilities, key=format_signal_key):
+            signal_probability = signal_probabilities[signal_key]
+            if signal_probability <= 0.0:
+                continue
+            posterior_probabilities = {
+                scenario_name: (
+                    joint_by_signal[signal_key].get(scenario_name, 0.0)
+                    / signal_probability
+                )
+                for scenario_name in self.public_prior.support
+            }
+            for scenario_name, posterior_probability in posterior_probabilities.items():
+                reconstructed_prior[scenario_name] += (
+                    signal_probability * posterior_probability
+                )
+            report_rows.append(
+                {
+                    "signal_summary": format_signal_key(signal_key),
+                    "signal_probability": signal_probability,
+                    "posterior_probabilities": posterior_probabilities,
+                }
+            )
+
+        max_error = max(
+            abs(
+                reconstructed_prior[scenario_name]
+                - self.public_prior.probabilities[scenario_name]
+            )
+            for scenario_name in self.public_prior.support
+        )
+        return {
+            "rows": tuple(report_rows),
+            "reconstructed_prior": reconstructed_prior,
+            "max_error": max_error,
+        }
+
+    def _mask_verification_rows(
+        self,
+        rows: tuple[dict[str, Any], ...],
+    ) -> tuple[dict[str, Any], ...]:
+        verification_rows: list[dict[str, Any]] = []
+        for row in rows:
+            posterior = self.posterior_from_signal(row["signal"])
+            observed_values: list[dict[str, Any]] = []
+            for metric in sorted_metrics(frozenset(row["signal"].value)):
+                nominal_values = getattr(self._nominal_scenario, metric.value)
+                for key, realized_value in sorted(
+                    row["signal"].value[metric].items(),
+                    key=lambda item: str(item[0]),
+                ):
+                    observed_values.append(
+                        {
+                            "metric": metric,
+                            "key": key,
+                            "nominal_value": nominal_values[key],
+                            "realized_value": realized_value,
+                        }
+                    )
+
+            posterior_changed = any(
+                abs(
+                    posterior.probabilities.get(scenario_name, 0.0)
+                    - self.public_prior.probabilities[scenario_name]
+                )
+                > 1e-12
+                for scenario_name in self.public_prior.support
+            )
+            verification_rows.append(
+                {
+                    "scenario_name": row["scenario_name"],
+                    "mask": row["mask"],
+                    "hidden_metrics": tuple(
+                        metric
+                        for metric in self._metric_order
+                        if metric not in row["mask"]
+                    ),
+                    "signal_summary": format_signal_key(row["signal_key"]),
+                    "observed_values": tuple(observed_values),
+                    "posterior_probabilities": dict(posterior.probabilities),
+                    "posterior_changed": posterior_changed,
+                }
+            )
+        return tuple(verification_rows)
+
+    def evaluate_policy(
+        self,
+        probabilities: Mapping[MetricName, float] | None = None,
+    ) -> dict[str, Any]:
+        if probabilities is None:
+            probabilities = self.signaling_scheme()
+
+        rows = self._scenario_mask_rows(probabilities)
+        sender_metric = self._sender_metric()
+        expected_sender_metric = 0.0
+        breakdown_rows: list[dict[str, Any]] = []
+
+        for row in rows:
+            evaluation = self._evaluate_signal(
+                signal=row["signal"],
+                realized_scenario=row["scenario"],
+            )
+            sender_metric_value = -evaluation["realized_metrics"][sender_metric]
+            weighted_contribution = (
+                row["scenario_probability"]
+                * row["mask_probability"]
+                * sender_metric_value
+            )
+            expected_sender_metric += weighted_contribution
+            breakdown_rows.append(
+                {
+                    "scenario_name": row["scenario_name"],
+                    "scenario_probability": row["scenario_probability"],
+                    "mask": row["mask"],
+                    "mask_probability": row["mask_probability"],
+                    "signal_summary": format_signal_key(row["signal_key"]),
+                    "posterior_probabilities": dict(
+                        evaluation["posterior"].probabilities
+                    ),
+                    "chosen_route_label": evaluation["chosen_route"].label,
+                    "chosen_path": evaluation["chosen_route"].path,
+                    "realized_metrics": dict(evaluation["realized_metrics"]),
+                    "sender_metric_value": sender_metric_value,
+                    "weighted_contribution": weighted_contribution,
+                }
+            )
+
+        return {
+            "expected_sender_utility": -expected_sender_metric,
+            "expected_sender_metric": expected_sender_metric,
+            "breakdown_rows": tuple(breakdown_rows),
+            "bayes_report": self.bayes_plausibility_report(
+                probabilities=probabilities,
+                rows=rows,
+            ),
+            "mask_verification_rows": self._mask_verification_rows(rows),
+        }
+
+    def _objective_from_flat_logits(self, flat_logits: np.ndarray) -> float:
+        probabilities = self.signaling_scheme(logits=flat_logits)
+        return float(self.evaluate_policy(probabilities)["expected_sender_utility"])
+
+    def _finite_difference_gradient(
+        self,
+        flat_logits: np.ndarray,
+        epsilon: float,
+    ) -> np.ndarray:
+        gradient = np.zeros_like(flat_logits)
+        for idx in range(flat_logits.size):
+            direction = np.zeros_like(flat_logits)
+            direction[idx] = epsilon
+            plus = self._objective_from_flat_logits(flat_logits + direction)
+            minus = self._objective_from_flat_logits(flat_logits - direction)
+            gradient[idx] = (plus - minus) / (2.0 * epsilon)
+        return gradient
+
+    def solve(
+        self,
+        max_iter: int = 100,
+        step_size: float = 0.15,
+        finite_diff_epsilon: float = 1e-2,
+        convergence_tol: float = 1e-6,
+        convergence_patience: int = 15,
+    ) -> dict[str, Any]:
+        if max_iter <= 0:
+            raise ValueError("max_iter must be positive.")
+        if step_size <= 0:
+            raise ValueError("step_size must be positive.")
+        if finite_diff_epsilon <= 0:
+            raise ValueError("finite_diff_epsilon must be positive.")
+        if convergence_patience <= 0:
+            raise ValueError("convergence_patience must be positive.")
+
+        flat_logits = self._logits.copy()
+        m = np.zeros_like(flat_logits)
+        v = np.zeros_like(flat_logits)
+        beta1 = 0.9
+        beta2 = 0.999
+        adam_eps = 1e-4
+
+        utility_history: list[float] = []
+        grad_norm_history: list[float] = []
+        policy_history: list[dict[MetricName, float]] = []
+        stagnant_steps = 0
+        converged = False
+
+        for step in range(1, max_iter + 1):
+            policy_history.append(self.signaling_scheme(logits=flat_logits))
+            utility = self._objective_from_flat_logits(flat_logits)
+            gradient = self._finite_difference_gradient(
+                flat_logits=flat_logits,
+                epsilon=finite_diff_epsilon,
+            )
+            grad_norm = float(np.linalg.norm(gradient))
+
+            m = beta1 * m + (1.0 - beta1) * gradient
+            v = beta2 * v + (1.0 - beta2) * (gradient * gradient)
+            m_hat = m / (1.0 - beta1**step)
+            v_hat = v / (1.0 - beta2**step)
+            flat_logits = flat_logits + step_size * m_hat / (np.sqrt(v_hat) + adam_eps)
+
+            utility_history.append(float(utility))
+            grad_norm_history.append(grad_norm)
+
+            if len(utility_history) >= 2:
+                utility_delta = abs(utility_history[-1] - utility_history[-2])
+                if utility_delta < convergence_tol:
+                    stagnant_steps += 1
+                else:
+                    stagnant_steps = 0
+
+            if stagnant_steps >= convergence_patience:
+                converged = True
+                break
+
+        self._logits = flat_logits
+        final_probabilities = self.signaling_scheme()
+        self.sender.signal_policy.update_probabilities(final_probabilities)
+        evaluation = self.evaluate_policy(final_probabilities)
+        return {
+            "iterations": len(utility_history),
+            "converged": converged,
+            "utility_history": utility_history,
+            "grad_norm_history": grad_norm_history,
+            "policy_history": policy_history + [final_probabilities],
+            "final_probabilities": final_probabilities,
+            **evaluation,
+        }
+
+
+def build_informative_game_one(seed: int = 1) -> GameOne:
     network = create_sample_graph()
-
     origin: Node = (0, 0)
     target: Node = (1, 1)
     individual = Individual(id="robert", demand=Demand(origin, target))
-    individuals = frozenset([individual])
-
-    world = World(
-        network=network,
-        individuals=individuals,
-    )
-
-    rng = np.random.default_rng(7)
-    base_scenario = Scenario.from_world("base", world)
-
-    def sample_relative_arc_metric(
-        values: Mapping[Arc, float],
-        lower_factor: float,
-        upper_factor: float,
-    ) -> dict[Arc, float]:
-        if lower_factor > upper_factor:
-            raise ValueError("lower_factor must be less than or equal to upper_factor.")
-        return {
-            key: max(0.0, value * rng.uniform(lower_factor, upper_factor))
-            for key, value in values.items()
-        }
-
-    def make_prior_scenario(index: int) -> Scenario:
-        return base_scenario.with_overrides(
-            name=f"s{index}",
-            arc_overrides={
-                MetricName.TRAVEL_TIME: sample_relative_arc_metric(
-                    dict(base_scenario.travel_time),
-                    0.8,
-                    1.2,
-                ),
-                MetricName.HAZARD: sample_relative_arc_metric(
-                    dict(base_scenario.hazard),
-                    1,
-                    3,
-                ),
-            },
-            node_overrides={
-                MetricName.POLICING: {
-                    target: float(index % 2 == 0),
-                },
-            },
-        )
+    world = World(network=network, individuals=frozenset({individual}))
+    prior = build_informative_prior(world)
 
     human_preference = Preference(
         elements={
             MetricName.TRAVEL_TIME,
             MetricName.COST,
-            MetricName.EMISSIONS,
+            # MetricName.EMISSIONS,
         },
         relations={
             (MetricName.COST, MetricName.TRAVEL_TIME),
-            (MetricName.EMISSIONS, MetricName.TRAVEL_TIME),
+            # (MetricName.EMISSIONS, MetricName.TRAVEL_TIME),
         },
     )
-
-    prior = FinitePrior(
-        name="prior",
-        support={f"s{i}": make_prior_scenario(i) for i in range(5)},
-        probabilities={f"s{i}": 0.2 for i in range(5)},
-    )
-
-    receiver = Receiver(
-        individual=individual,
-        rtype="human",
-        preference=human_preference,
-        prior=prior,
-        world=world,
-    )
-
     sender_preference = Preference(
-        elements={MetricName.TRAVEL_TIME},
+        elements={MetricName.COST},
         relations=set(),
     )
-    seed = 1
     sender = ScalarSender(
         prior=prior,
         world=world,
         preference=sender_preference,
         signal_policy=MaskSignalPolicy(
             seed=seed,
-            considered_metrics=frozenset({
-                MetricName.TRAVEL_TIME,
-                MetricName.HAZARD,
-                MetricName.POLICING,
-            }),
+            considered_metrics=frozenset(
+                {
+                    MetricName.TRAVEL_TIME,
+                    # MetricName.HAZARD,
+                    MetricName.COST,
+                }
+            ),
             probabilities={
-                MetricName.TRAVEL_TIME: 0.8,
-                MetricName.HAZARD: 0.5,
+                MetricName.TRAVEL_TIME: 0.5,
+                # MetricName.HAZARD: 0.2,
+                MetricName.COST: 0.5,
             },
         ),
     )
-    
-    game = GameOne(
+    receiver = Receiver(
+        individual=individual,
+        rtype="human",
+        preference=human_preference,
+        prior=prior,
+        world=world,
+        sender=sender,
+        n_scenarios=len(prior.support),
+    )
+    return GameOne(
         sender=sender,
         receivers=[receiver],
         world=world,
         public_prior=prior,
-        seed=seed
+        seed=seed,
     )
+
+
+if __name__ == "__main__":
+    game = build_informative_game_one(seed=1)
+    result = game.solve(max_iter=2000)
+
+    print("Converged:", result["converged"])
+    print("Iterations:", result["iterations"])
+    print("Final probabilities:")
+    for metric, probability in result["final_probabilities"].items():
+        print(f"  {metric.value}: {probability:.4f}")
+
+    bayes_report = result["bayes_report"]
+    print("Bayes plausibility max error:", f"{bayes_report['max_error']:.3e}")
+    print("Bayes posteriors:")
+    for row in bayes_report["rows"]:
+        print(
+            f"  {row['signal_summary']} | p={row['signal_probability']:.3f} | "
+            f"{format_posterior(row['posterior_probabilities'])}"
+        )
+
+    print("Mask semantics:")
+    for row in result["mask_verification_rows"]:
+        observation_text = ", ".join(
+            (
+                f"{observed['metric'].value}[{observed['key']!r}] "
+                f"nominal={observed['nominal_value']:.3f} "
+                f"realized={observed['realized_value']:.3f}"
+            )
+            for observed in row["observed_values"]
+        ) or "no observed values"
+        print(
+            f"  scenario={row['scenario_name']} | "
+            f"mask={format_mask(row['mask'])} | "
+            f"posterior_changed={row['posterior_changed']} | {observation_text}"
+        )
+
+    print("Per-scenario / per-mask breakdown:")
+    for row in result["breakdown_rows"]:
+        print(
+            f"  scenario={row['scenario_name']} "
+            f"(p={row['scenario_probability']:.3f}) | "
+            f"mask={format_mask(row['mask'])} "
+            f"(p={row['mask_probability']:.3f}) | "
+            f"signal={row['signal_summary']} | "
+            f"posterior={format_posterior(row['posterior_probabilities'])} | "
+            f"path={row['chosen_path']} | "
+            f"sender_metric={row['sender_metric_value']:.3f} | "
+            f"contribution={row['weighted_contribution']:.3f}"
+        )
+
+    print("Final expected sender metric:", f"{result['expected_sender_metric']:.4f}")
+
+    plot_policy_learning(MetricName.COST, MetricName.TRAVEL_TIME, result)
+    plt.show()

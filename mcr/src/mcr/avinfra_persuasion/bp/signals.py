@@ -65,7 +65,9 @@ class MaskSignalPolicy(SignalPolicy):
             MetricName.coerce(metric) for metric in self.considered_metrics
         )
         if not metrics:
-            raise ValueError("MaskSignalPolicy requires at least one considered metric.")
+            raise ValueError(
+                "MaskSignalPolicy requires at least one considered metric."
+            )
 
         normalized_probabilities = {
             MetricName.coerce(metric): float(probability)
@@ -116,7 +118,6 @@ class MaskSignalPolicy(SignalPolicy):
         metric_order = tuple(
             sorted(self.considered_metrics, key=lambda metric: metric.value)
         )
-        # TODO understand whether these samples should be random or done at once
         mask_values = {
             metric: int(draw_rng.binomial(1, self.probabilities[metric]))
             for metric in metric_order
@@ -124,10 +125,7 @@ class MaskSignalPolicy(SignalPolicy):
         revealed_metrics = {
             metric for metric, keep in mask_values.items() if keep == 1
         }
-        return MaskSignal(
-            metrics=frozenset(revealed_metrics),
-            value=mask_values,
-        )
+        return MaskSignal(metrics=frozenset(revealed_metrics))
 
     def _coerce_considered_metric(self, metric: MetricName | str) -> MetricName:
         metric_name = MetricName.coerce(metric)
