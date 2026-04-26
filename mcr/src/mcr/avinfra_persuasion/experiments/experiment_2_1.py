@@ -1,5 +1,5 @@
 """
-Finite-prior toy experiment with a family of receivers.
+Finite-prior toy experiment with a family of receivers and a per-metric policy.
 
 The prior support is an epistemic model of the world used for signaling and
 belief updates. Once all receivers choose routes, the actual realized network
@@ -37,6 +37,7 @@ from ..datastructures import (
 from ..networks.toy_3 import create_sample_graph
 from .helpers import format_mask, sorted_metrics
 from .plotting import plot_state_mask_policy
+from tqdm import tqdm
 
 
 def build_informative_prior(world: World) -> FinitePrior:
@@ -297,14 +298,13 @@ class GameTwo(ConvergenceGame):
             for scenario_name, scenario in self.public_prior.support.items():
                 scenario_probability = self.public_prior.probabilities[scenario_name]
                 for mask in self._all_masks:
+                    mask_probability = self._mask_probability(scenario_name, mask, probabilities)
+                    if np.isclose(mask_probability, 0.0):
+                        continue
+
                     signal = self.sender.materialize_signal(
                         mask=mask,
                         realized_scenario=scenario,
-                    )
-                    mask_probability = self._mask_probability(
-                        scenario_name,
-                        mask,
-                        probabilities,
                     )
                     evaluation = self._evaluate_signal(signal, scenario)
                     weighted_contribution = (

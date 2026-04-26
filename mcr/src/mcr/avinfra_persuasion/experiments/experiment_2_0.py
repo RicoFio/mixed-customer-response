@@ -269,11 +269,14 @@ class GameTwo(ConvergenceGame):
         for scenario_name, scenario in self.public_prior.support.items():
             scenario_probability = self.public_prior.probabilities[scenario_name]
             for mask in self._all_masks:
+                mask_probability = self._mask_probability(mask, probabilities)
+                if np.isclose(mask_probability, 0.0):
+                    continue
+
                 signal = self.sender.materialize_signal(
                     mask=mask,
                     realized_scenario=scenario,
                 )
-                mask_probability = self._mask_probability(mask, probabilities)
                 evaluation = self._evaluate_signal(signal, scenario)
                 weighted_contribution = (
                     scenario_probability
@@ -420,11 +423,13 @@ def build_informative_game_two(
     )
     av_preference = Preference(
         elements={
+            MetricName.TRAVEL_TIME,
             MetricName.HAZARD,
             MetricName.COST,
         },
         relations={
             (MetricName.COST, MetricName.HAZARD),
+            (MetricName.TRAVEL_TIME, MetricName.HAZARD),
         },
     )
     # av_preference.draw_hasse_diagram()
@@ -473,8 +478,8 @@ def build_informative_game_two(
 
 
 if __name__ == "__main__":
-    game = build_informative_game_two(seed=1, n_humans=10, n_avs=10)
-    result = game.solve(max_iter=500)
+    game = build_informative_game_two(seed=1, n_humans=5, n_avs=5)
+    result = game.solve(max_iter=30)
 
     print("Converged:", result["converged"])
     print("Iterations:", result["iterations"])
