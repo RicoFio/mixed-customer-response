@@ -7,7 +7,13 @@ import numpy as np
 
 from ..datastructures import MetricName, Prior, Scenario, World
 from .game import Preference
-from .signals import MaskSignal, Signal, SignalPolicy
+from .signals import (
+    MaskSignal,
+    MaskSignalPolicy,
+    Signal,
+    SignalPolicy,
+    StateDependentMaskSignalPolicy,
+)
 
 
 ARC_SIGNAL_METRICS = frozenset(
@@ -34,7 +40,10 @@ class Sender:
         realized_scenario: Scenario,
         rng: np.random.Generator | None = None,
     ) -> Signal:
-        sampled_signal = self.signal_policy.sample(rng=rng)
+        sampled_signal = self.signal_policy.sample(
+            realized_scenario=realized_scenario,
+            rng=rng,
+        )
         if isinstance(sampled_signal, MaskSignal):
             return self.materialize_signal(
                 mask=sampled_signal.metrics,
@@ -90,6 +99,29 @@ class Sender:
         return self.materialize_signal(
             mask=signal.metrics,
             realized_scenario=realized_scenario,
+        )
+
+    def signal_likelihood(
+        self,
+        signal: Signal,
+        scenario: Scenario,
+    ) -> float:
+        truthful_signal = self.materialize_signal(
+            mask=signal.metrics,
+            realized_scenario=scenario,
+        )
+        if (
+            truthful_signal.metrics != signal.metrics
+            or truthful_signal.value != signal.value
+        ):
+            return 0.0
+
+        if isinstance(self.signal_policy, MaskSignalPolicy):
+            return self.signal_policy.mask_probability(signal.metrics)
+        if isinstance(self.signal_policy, StateDependentMaskSignalPolicy):
+            return self.signal_policy.mask_probability(scenario.name, signal.metrics)
+        raise NotImplementedError(
+            f"Unsupported signal policy: {type(self.signal_policy).__name__!r}."
         )
 
     def expected_metrics(self, realized_world):

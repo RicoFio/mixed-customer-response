@@ -5,6 +5,8 @@ The prior support is an epistemic model of the world used for signaling and
 belief updates. Once all receivers choose routes, the actual realized network
 metrics are computed endogenously from the joint path profile via
 ``world.get_realized_metrics(...)``.
+
+sender has full commitment power
 """
 
 from __future__ import annotations
@@ -15,11 +17,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from matplotlib import pyplot as plt
 
 from ..bp.game import ConvergenceGame, Preference
 from ..bp.receivers import PriorRouteChoiceReceiver, Receiver
 from ..bp.senders import ScalarSender, Sender
-from ..bp.signals import MaskSignalPolicy, Signal
+from ..bp.signals import Signal, StateDependentMaskSignalPolicy
 from ..datastructures import (
     Arc,
     Demand,
@@ -33,8 +36,7 @@ from ..datastructures import (
 )
 from ..networks.toy_3 import create_sample_graph
 from .helpers import format_mask, sorted_metrics
-from .plotting import plot_policy_learning
-from matplotlib import pyplot as plt
+from .plotting import plot_state_mask_policy
 
 
 def build_informative_prior(world: World) -> FinitePrior:
@@ -136,6 +138,7 @@ class GameTwo(ConvergenceGame):
     seed: int
 
     _metric_order: tuple[MetricName, ...] = field(init=False, repr=False)
+    _state_order: tuple[str, ...] = field(init=False, repr=False)
     _all_masks: tuple[frozenset[MetricName], ...] = field(init=False, repr=False)
     _logits: np.ndarray = field(init=False, repr=False)
 
@@ -144,9 +147,9 @@ class GameTwo(ConvergenceGame):
             raise ValueError("GameTwo requires at least one receiver.")
         if not isinstance(self.public_prior, FinitePrior):
             raise NotImplementedError("GameTwo currently requires a FinitePrior.")
-        if not isinstance(self.sender.signal_policy, MaskSignalPolicy):
+        if not isinstance(self.sender.signal_policy, StateDependentMaskSignalPolicy):
             raise NotImplementedError(
-                "GameTwo currently requires a MaskSignalPolicy sender."
+                "GameTwo currently requires a StateDependentMaskSignalPolicy sender."
             )
         if self.sender.prior != self.public_prior:
             raise ValueError("Sender prior must match the public prior.")
@@ -160,6 +163,11 @@ class GameTwo(ConvergenceGame):
         self._metric_order = sorted_metrics(
             self.sender.signal_policy.considered_metrics
         )
+        self._state_order = tuple(sorted(self.public_prior.support))
+        if self.sender.signal_policy.state_names != frozenset(self._state_order):
+            raise ValueError(
+                "State-dependent signal policy states must match the finite prior support."
+            )
         self._all_masks = tuple(
             frozenset(
                 metric
@@ -171,39 +179,52 @@ class GameTwo(ConvergenceGame):
 
         probabilities = np.array(
             [
-                self.sender.signal_policy.probability(metric)
-                for metric in self._metric_order
+                [
+                    self.sender.signal_policy.mask_probability(state_name, mask)
+                    for mask in self._all_masks
+                ]
+                for state_name in self._state_order
             ],
             dtype=float,
         )
         clipped = np.clip(probabilities, 1e-6, 1.0 - 1e-6)
-        self._logits = np.log(clipped / (1.0 - clipped))
+        self._logits = np.log(clipped)
 
     @staticmethod
-    def _sigmoid(x: np.ndarray) -> np.ndarray:
-        return 1.0 / (1.0 + np.exp(-x))
+    def _softmax_rows(x: np.ndarray) -> np.ndarray:
+        shifted = x - np.max(x, axis=1, keepdims=True)
+        exp_x = np.exp(shifted)
+        return exp_x / np.sum(exp_x, axis=1, keepdims=True)
 
     def signaling_scheme(
         self,
         logits: np.ndarray | None = None,
-    ) -> dict[MetricName, float]:
-        logits = self._logits if logits is None else np.asarray(logits, dtype=float)
-        probabilities = self._sigmoid(logits)
+    ) -> dict[str, dict[frozenset[MetricName], float]]:
+        if logits is None:
+            logits_array = self._logits
+        else:
+            logits_array = np.asarray(logits, dtype=float)
+            if logits_array.ndim == 1:
+                logits_array = logits_array.reshape(
+                    len(self._state_order),
+                    len(self._all_masks),
+                )
+        probabilities = self._softmax_rows(logits_array)
         return {
-            metric: float(probability)
-            for metric, probability in zip(self._metric_order, probabilities)
+            state_name: {
+                mask: float(probability)
+                for mask, probability in zip(self._all_masks, state_probabilities)
+            }
+            for state_name, state_probabilities in zip(self._state_order, probabilities)
         }
 
     def _mask_probability(
         self,
+        state_name: str,
         mask: frozenset[MetricName],
-        probabilities: Mapping[MetricName, float],
+        probabilities: Mapping[str, Mapping[frozenset[MetricName], float]],
     ) -> float:
-        mass = 1.0
-        for metric in self._metric_order:
-            probability = probabilities[metric]
-            mass *= probability if metric in mask else (1.0 - probability)
-        return mass
+        return probabilities[state_name][mask]
 
     def _sender_metric(self) -> MetricName:
         if len(self.sender.preference.elements) != 1:
@@ -258,41 +279,54 @@ class GameTwo(ConvergenceGame):
 
     def evaluate_policy(
         self,
-        probabilities: Mapping[MetricName, float] | None = None,
+        probabilities: Mapping[str, Mapping[frozenset[MetricName], float]] | None = None,
     ) -> dict[str, Any]:
         if probabilities is None:
             probabilities = self.signaling_scheme()
 
+        previous_probabilities = {
+            state_name: dict(distribution)
+            for state_name, distribution in self.sender.signal_policy.state_probabilities.items()
+        }
+        self.sender.signal_policy.update_state_distributions(probabilities)
+
         expected_sender_metric = 0.0
         breakdown_rows: list[dict[str, Any]] = []
 
-        for scenario_name, scenario in self.public_prior.support.items():
-            scenario_probability = self.public_prior.probabilities[scenario_name]
-            for mask in self._all_masks:
-                signal = self.sender.materialize_signal(
-                    mask=mask,
-                    realized_scenario=scenario,
-                )
-                mask_probability = self._mask_probability(mask, probabilities)
-                evaluation = self._evaluate_signal(signal, scenario)
-                weighted_contribution = (
-                    scenario_probability
-                    * mask_probability
-                    * evaluation["sender_metric_value"]
-                )
-                expected_sender_metric += weighted_contribution
-                breakdown_rows.append(
-                    {
-                        "scenario_name": scenario_name,
-                        "scenario_probability": scenario_probability,
-                        "mask": sorted_metrics(mask),
-                        "mask_probability": mask_probability,
-                        "sender_metric_value": evaluation["sender_metric_value"],
-                        "weighted_contribution": weighted_contribution,
-                        "path_counts": dict(evaluation["path_counts"]),
-                        "realized_scenario_name": evaluation["realized_scenario"].name,
-                    }
-                )
+        try:
+            for scenario_name, scenario in self.public_prior.support.items():
+                scenario_probability = self.public_prior.probabilities[scenario_name]
+                for mask in self._all_masks:
+                    signal = self.sender.materialize_signal(
+                        mask=mask,
+                        realized_scenario=scenario,
+                    )
+                    mask_probability = self._mask_probability(
+                        scenario_name,
+                        mask,
+                        probabilities,
+                    )
+                    evaluation = self._evaluate_signal(signal, scenario)
+                    weighted_contribution = (
+                        scenario_probability
+                        * mask_probability
+                        * evaluation["sender_metric_value"]
+                    )
+                    expected_sender_metric += weighted_contribution
+                    breakdown_rows.append(
+                        {
+                            "scenario_name": scenario_name,
+                            "scenario_probability": scenario_probability,
+                            "mask": sorted_metrics(mask),
+                            "mask_probability": mask_probability,
+                            "sender_metric_value": evaluation["sender_metric_value"],
+                            "weighted_contribution": weighted_contribution,
+                            "path_counts": dict(evaluation["path_counts"]),
+                            "realized_scenario_name": evaluation["realized_scenario"].name,
+                        }
+                    )
+        finally:
+            self.sender.signal_policy.update_state_distributions(previous_probabilities)
 
         return {
             "expected_sender_utility": expected_sender_metric,
@@ -335,7 +369,7 @@ class GameTwo(ConvergenceGame):
         if convergence_patience <= 0:
             raise ValueError("convergence_patience must be positive.")
 
-        flat_logits = self._logits.copy()
+        flat_logits = self._logits.reshape(-1).copy()
         m = np.zeros_like(flat_logits)
         v = np.zeros_like(flat_logits)
         beta1 = 0.9
@@ -344,7 +378,7 @@ class GameTwo(ConvergenceGame):
 
         utility_history: list[float] = []
         grad_norm_history: list[float] = []
-        policy_history: list[dict[MetricName, float]] = []
+        policy_history: list[dict[str, dict[frozenset[MetricName], float]]] = []
         stagnant_steps = 0
         converged = False
 
@@ -377,9 +411,9 @@ class GameTwo(ConvergenceGame):
                 converged = True
                 break
 
-        self._logits = flat_logits
+        self._logits = flat_logits.reshape(len(self._state_order), len(self._all_masks))
         final_probabilities = self.signaling_scheme()
-        self.sender.signal_policy.update_probabilities(final_probabilities)
+        self.sender.signal_policy.update_state_distributions(final_probabilities)
         evaluation = self.evaluate_policy(final_probabilities)
         return {
             "iterations": len(utility_history),
@@ -437,18 +471,15 @@ def build_informative_game_two(
         prior=prior,
         world=world,
         preference=sender_preference,
-        signal_policy=MaskSignalPolicy(
+        signal_policy=StateDependentMaskSignalPolicy(
             seed=seed,
+            state_names=frozenset(prior.support),
             considered_metrics=frozenset(
                 {
                     MetricName.TRAVEL_TIME,
                     MetricName.HAZARD,
                 }
             ),
-            probabilities={
-                MetricName.TRAVEL_TIME: 0.5,
-                MetricName.HAZARD: 0.5,
-            },
         ),
     )
     receivers = [
@@ -474,13 +505,24 @@ def build_informative_game_two(
 
 if __name__ == "__main__":
     game = build_informative_game_two(seed=1, n_humans=5, n_avs=5)
-    result = game.solve(max_iter=500)
+    result = game.solve(max_iter=100)
 
     print("Converged:", result["converged"])
     print("Iterations:", result["iterations"])
-    print("Final probabilities:")
-    for metric, probability in result["final_probabilities"].items():
-        print(f"  {metric.value}: {probability:.4f}")
+    print("Final state-dependent mask distributions:")
+    for state_name, distribution in result["final_probabilities"].items():
+        print(f"  {state_name}:")
+        for mask in sorted(
+            distribution,
+            key=lambda mask: (
+                len(mask),
+                tuple(
+                    metric.value
+                    for metric in sorted(mask, key=lambda metric: metric.value)
+                ),
+            ),
+        ):
+            print(f"    {format_mask(mask)}: {distribution[mask]:.4f}")
 
     print("Per-scenario / per-mask breakdown:")
     for row in result["breakdown_rows"]:
@@ -496,5 +538,5 @@ if __name__ == "__main__":
 
     print("Final expected sender metric:", f"{result['expected_sender_metric']:.4f}")
 
-    plot_policy_learning(MetricName.HAZARD, MetricName.TRAVEL_TIME, result)
+    plot_state_mask_policy(result)
     plt.show()

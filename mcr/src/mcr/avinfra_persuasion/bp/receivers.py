@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TypeAlias
 
 import numpy as np
+from functools import cache
 
 from ..datastructures import (
     Arc,
@@ -49,7 +50,7 @@ class Receiver:
     routing_solver_config: RoutingSolverConfigLike = field(
         default_factory=RoutingSolverConfig,
     )
-
+    
     _rng: np.random.Generator = field(init=False, repr=False, compare=False)
     _action_history: list[RoutingSolutionPoint] = field(
         init=False,
@@ -74,8 +75,9 @@ class Receiver:
     def demand(self) -> Demand:
         return self.individual.demand
 
+
     def update_internal_belief(self, signal: Signal) -> None:
-        if not signal.value:
+        if not signal.value and self.sender is None:
             return
 
         current_belief = self._current_belief()
@@ -86,14 +88,26 @@ class Receiver:
 
         posterior_support: dict[str, Scenario] = {}
         posterior_probabilities: dict[str, float] = {}
+        total_posterior_mass = 0.0
         for scenario_name, scenario in current_belief.support.items():
-            if self._scenario_matches_signal(scenario=scenario, signal=signal):
-                posterior_support[scenario_name] = scenario
-                posterior_probabilities[scenario_name] = (
-                    current_belief.probabilities[scenario_name]
+            if self.sender is None:
+                likelihood = (
+                    1.0
+                    if self._scenario_matches_signal(scenario=scenario, signal=signal)
+                    else 0.0
                 )
+            else:
+                likelihood = self.sender.signal_likelihood(signal, scenario)
 
-        if not posterior_support:
+            if likelihood > 0.0:
+                posterior_probability = (
+                    current_belief.probabilities[scenario_name] * likelihood
+                )
+                posterior_support[scenario_name] = scenario
+                posterior_probabilities[scenario_name] = posterior_probability
+                total_posterior_mass += posterior_probability
+
+        if total_posterior_mass <= 0.0:
             raise ValueError(
                 "Signal is inconsistent with the receiver belief support."
             )
@@ -112,13 +126,10 @@ class Receiver:
 
     def _compute_paths(self) -> RoutingSolution:
         belief = self._current_belief()
-        if isinstance(belief, FinitePrior):
-            scenarios = tuple(belief.support.values())
-        else:
-            scenarios = belief.sample(
-                n_samples=self.n_scenarios,
-                seed=self.rng_seed,
-            )
+        scenarios = belief.sample(
+            n_samples=self.n_scenarios,
+            seed=self.rng_seed,
+        )
         return solve_routes(
             world=self.world,
             source=self.demand.origin,
@@ -324,3 +335,6 @@ class PriorRouteChoiceReceiver(Receiver):
                 totals[metric] += scenario_weight * value
 
         return totals
+
+
+RouteChoiceReceiver = PriorRouteChoiceReceiver

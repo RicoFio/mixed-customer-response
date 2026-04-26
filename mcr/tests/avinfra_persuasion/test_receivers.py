@@ -8,7 +8,11 @@ import pytest
 from mcr.avinfra_persuasion.bp import receivers as receivers_module
 from mcr.avinfra_persuasion.bp.receivers import Receiver
 from mcr.avinfra_persuasion.bp.senders import ScalarSender
-from mcr.avinfra_persuasion.bp.signals import MaskSignalPolicy, Signal
+from mcr.avinfra_persuasion.bp.signals import (
+    MaskSignalPolicy,
+    Signal,
+    StateDependentMaskSignalPolicy,
+)
 from mcr.avinfra_persuasion.datastructures import (
     Arc,
     Demand,
@@ -29,6 +33,7 @@ def _receiver_world() -> tuple[World, Arc]:
     network = InfrastructureGraph(
         V={"s", "t"},
         A={arc},
+        I={arc},
         nominal_travel_time={arc: 1.0},
         nominal_discomfort={arc: 1.0},
         nominal_hazards={arc: 0.0},
@@ -67,6 +72,7 @@ def _two_route_world() -> tuple[World, Arc, Arc, Arc]:
     network = InfrastructureGraph(
         V={"s", "m", "t"},
         A={direct, via_left, via_right},
+        I={direct},
         nominal_travel_time={direct: 1.0, via_left: 1.0, via_right: 1.0},
         nominal_discomfort={direct: 1.0, via_left: 1.0, via_right: 1.0},
         nominal_hazards={direct: 0.0, via_left: 0.0, via_right: 0.0},
@@ -326,6 +332,123 @@ def test_update_internal_belief_rejects_non_finite_belief() -> None:
         )
 
 
+def test_update_internal_belief_uses_state_dependent_mask_likelihood() -> None:
+    world, arc = _receiver_world()
+    scenario_a = Scenario(
+        name="a",
+        travel_time={arc: 1.0},
+        discomfort={arc: 1.0},
+        hazard={arc: 0.0},
+        cost={arc: 0.0},
+        emissions={arc: 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+    scenario_b = Scenario(
+        name="b",
+        travel_time={arc: 1.0},
+        discomfort={arc: 1.0},
+        hazard={arc: 0.0},
+        cost={arc: 0.0},
+        emissions={arc: 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+    prior = FinitePrior(
+        name="prior",
+        support={"a": scenario_a, "b": scenario_b},
+        probabilities={"a": 0.5, "b": 0.5},
+    )
+    sender = ScalarSender(
+        prior=prior,
+        world=world,
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        signal_policy=StateDependentMaskSignalPolicy(
+            state_names=frozenset(prior.support),
+            considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
+            state_probabilities={
+                "a": {frozenset({MetricName.TRAVEL_TIME}): 0.9},
+                "b": {frozenset({MetricName.TRAVEL_TIME}): 0.1},
+            },
+        ),
+    )
+    receiver = Receiver(
+        individual=next(iter(world.individuals)),
+        rtype="test",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        sender=sender,
+        n_scenarios=1,
+    )
+
+    receiver.update_internal_belief(
+        Signal(
+            metrics=frozenset({MetricName.TRAVEL_TIME}),
+            value={MetricName.TRAVEL_TIME: {arc: 1.0}},
+        )
+    )
+
+    posterior = receiver.belief
+    assert isinstance(posterior, FinitePrior)
+    assert posterior.probabilities["a"] == pytest.approx(0.9)
+    assert posterior.probabilities["b"] == pytest.approx(0.1)
+
+
+def test_update_internal_belief_keeps_old_behavior_for_state_independent_mask() -> None:
+    world, arc = _receiver_world()
+    scenario_a = Scenario(
+        name="a",
+        travel_time={arc: 1.0},
+        discomfort={arc: 1.0},
+        hazard={arc: 0.0},
+        cost={arc: 0.0},
+        emissions={arc: 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+    scenario_b = Scenario(
+        name="b",
+        travel_time={arc: 1.0},
+        discomfort={arc: 1.0},
+        hazard={arc: 0.0},
+        cost={arc: 0.0},
+        emissions={arc: 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+    prior = FinitePrior(
+        name="prior",
+        support={"a": scenario_a, "b": scenario_b},
+        probabilities={"a": 0.5, "b": 0.5},
+    )
+    sender = ScalarSender(
+        prior=prior,
+        world=world,
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        signal_policy=MaskSignalPolicy(
+            considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
+            probabilities={MetricName.TRAVEL_TIME: 0.25},
+        ),
+    )
+    receiver = Receiver(
+        individual=next(iter(world.individuals)),
+        rtype="test",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        sender=sender,
+        n_scenarios=1,
+    )
+
+    receiver.update_internal_belief(
+        Signal(
+            metrics=frozenset({MetricName.TRAVEL_TIME}),
+            value={MetricName.TRAVEL_TIME: {arc: 1.0}},
+        )
+    )
+
+    posterior = receiver.belief
+    assert isinstance(posterior, FinitePrior)
+    assert posterior.probabilities == {"a": 0.5, "b": 0.5}
+
+
 def test_receiver_compute_paths_uses_posterior_samples(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -415,7 +538,7 @@ def test_route_choice_receiver_caches_prior_paths_and_rescores_posterior(
         preference=total_order_from_list([MetricName.COST]),
         signal_policy=MaskSignalPolicy(
             considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
-            probabilities={MetricName.TRAVEL_TIME: 0.0},
+            probabilities={MetricName.TRAVEL_TIME: 1.0},
         ),
     )
     receiver = receivers_module.RouteChoiceReceiver(

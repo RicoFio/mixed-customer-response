@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 
 from ..datastructures import MetricName
+from .helpers import format_mask
 
 
 def plot_policy_learning(
@@ -139,3 +140,99 @@ def _policy_probability(
         return float(policy[metric_name])
 
     raise ValueError(f"Policy history does not contain {metric.value!r}.")
+
+
+def plot_state_mask_policy(
+    result: Mapping[str, object],
+    ax: Axes | None = None,
+) -> Axes:
+    """
+    Plot a compact heatmap of the learned state-conditional mask distribution.
+
+    The ``result`` argument is expected to be the dictionary returned by
+    ``GameTwo.solve()``, with a ``final_probabilities`` entry mapping each
+    state name to a mask-probability table.
+    """
+    final_probabilities = result.get("final_probabilities")
+    if not isinstance(final_probabilities, Mapping) or not final_probabilities:
+        raise ValueError(
+            "result must contain a non-empty 'final_probabilities' mapping."
+        )
+
+    state_names = tuple(sorted(str(state_name) for state_name in final_probabilities))
+    first_distribution = final_probabilities[state_names[0]]
+    if not isinstance(first_distribution, Mapping) or not first_distribution:
+        raise ValueError(
+            "Each state distribution in 'final_probabilities' must be a "
+            "non-empty mapping."
+        )
+
+    masks = tuple(
+        sorted(
+            first_distribution,
+            key=lambda mask: (
+                len(mask),
+                tuple(
+                    metric.value
+                    for metric in sorted(mask, key=lambda metric: metric.value)
+                ),
+            ),
+        )
+    )
+    values = np.asarray(
+        [
+            [
+                float(
+                    _state_mask_probability(
+                        final_probabilities[state_name],
+                        mask,
+                    )
+                )
+                for mask in masks
+            ]
+            for state_name in state_names
+        ],
+        dtype=float,
+    )
+
+    width = max(6.0, 1.3 * len(masks))
+    height = max(3.0, 0.8 * len(state_names) + 1.5)
+    ax = ax or plt.subplots(figsize=(width, height))[1]
+    image = ax.imshow(values, cmap="viridis", vmin=0.0, vmax=1.0, aspect="auto")
+
+    ax.set_xticks(range(len(masks)))
+    ax.set_xticklabels([format_mask(mask) for mask in masks], rotation=25, ha="right")
+    ax.set_yticks(range(len(state_names)))
+    ax.set_yticklabels(state_names)
+    ax.set_xlabel("Mask")
+    ax.set_ylabel("State")
+    ax.set_title("State-dependent mask policy")
+
+    for row_idx, state_name in enumerate(state_names):
+        for col_idx, mask in enumerate(masks):
+            value = values[row_idx, col_idx]
+            text_color = "#111111" if value > 0.62 else "#f5f5f5"
+            ax.text(
+                col_idx,
+                row_idx,
+                f"{value:.2f}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=text_color,
+            )
+
+    colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    colorbar.set_label("P(mask | state)")
+    return ax
+
+
+def _state_mask_probability(
+    distribution: object,
+    mask: frozenset[MetricName],
+) -> float:
+    if not isinstance(distribution, Mapping):
+        raise ValueError("Each state distribution must be a mapping.")
+    if mask in distribution:
+        return float(distribution[mask])
+    raise ValueError(f"State distribution does not contain mask {format_mask(mask)!r}.")
