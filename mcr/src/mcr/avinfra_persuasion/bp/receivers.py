@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TypeAlias
 
 import numpy as np
@@ -104,11 +104,21 @@ class Receiver:
             probabilities=posterior_probabilities,
         )
 
+    def reset_for_evaluation(self) -> None:
+        """Reset transient belief and histories while preserving cached routes."""
+        self.belief = self.prior
+        self._action_history.clear()
+        self._realized_payoff_history.clear()
+
     def _compute_paths(self) -> RoutingSolution:
-        scenarios = self._current_belief().sample(
-            n_samples=self.n_scenarios,
-            seed=self.rng_seed,
-        )
+        belief = self._current_belief()
+        if isinstance(belief, FinitePrior):
+            scenarios = tuple(belief.support.values())
+        else:
+            scenarios = belief.sample(
+                n_samples=self.n_scenarios,
+                seed=self.rng_seed,
+            )
         return solve_routes(
             world=self.world,
             source=self.demand.origin,
@@ -277,17 +287,8 @@ class PriorRouteChoiceReceiver(Receiver):
         self,
         cached_solution: RoutingSolution,
     ) -> RoutingSolution:
-        rescored_points = tuple(
-            replace(
-                point,
-                objective_values=self._expected_objective_values_for_path(point.path),
-            )
-            for point in cached_solution.points
-        )
-        return RoutingSolution(
-            raw_solution=cached_solution.raw_solution,
-            model=cached_solution.model,
-            points=rescored_points,
+        return cached_solution.rescore(
+            scorer=self._expected_objective_values_for_path,
         )
 
     def _expected_objective_values_for_path(

@@ -429,6 +429,7 @@ class World:
         self,
         path_choices: Mapping[Individual, RoutingSolutionPoint],
         name: str = "realized",
+        base_scenario: Scenario | None = None,
     ) -> Scenario:
         """
         Return one realized scenario after all individual path choices are known.
@@ -437,7 +438,8 @@ class World:
         path contributes to an arc-volume map. The infrastructure then turns
         those volumes into congestion-dependent travel times and emissions.
         Static metrics such as discomfort, hazard, cost, and policing are copied
-        from the infrastructure. Individual regret can later be computed by
+        either from a provided base scenario or, if none is provided, from the
+        nominal infrastructure. Individual regret can later be computed by
         summing this returned scenario over each individual's chosen path.
         """
         self._validate_path_choices(path_choices)
@@ -447,11 +449,27 @@ class World:
         return Scenario(
             name=name,
             travel_time=actual_travel_times,
-            discomfort=dict(self.discomfort),
-            hazard=dict(self.hazard),
-            cost=dict(self.cost),
+            discomfort=(
+                dict(base_scenario.discomfort)
+                if base_scenario is not None
+                else dict(self.discomfort)
+            ),
+            hazard=(
+                dict(base_scenario.hazard)
+                if base_scenario is not None
+                else dict(self.hazard)
+            ),
+            cost=(
+                dict(base_scenario.cost)
+                if base_scenario is not None
+                else dict(self.cost)
+            ),
             emissions=actual_emissions,
-            policing=dict(self.policing),
+            policing=(
+                dict(base_scenario.policing)
+                if base_scenario is not None
+                else dict(self.policing)
+            ),
         )
 
     def _validate_path_choices(
@@ -646,6 +664,16 @@ class FinitePrior(Prior):
         probabilities = np.array([self.probabilities[name] for name in names])
         sampled_names = rng.choice(names, size=n_samples, replace=True, p=probabilities)
         return [self.support[name] for name in sampled_names]
+
+
+@dataclass(frozen=True)
+class ContinuousPrior(Prior):
+    pass
+
+
+@dataclass(frozen=True)
+class BetaPrior(ContinuousPrior):
+    pass
 
 
 @dataclass(frozen=True)

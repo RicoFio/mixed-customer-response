@@ -4,77 +4,13 @@ from collections.abc import Mapping
 
 from ..bp.signals import Signal
 from ..datastructures import (
-    Arc,
     MetricName,
-    Scenario,
-    World,
 )
 
 SignalObservationKey = tuple[
     tuple[MetricName, tuple[tuple[object, float], ...]],
     ...,
 ]
-
-
-def scenario_matches_signal(
-    *,
-    scenario: Scenario,
-    signal: Signal,
-) -> bool:
-    for metric, observed_value in signal.value.items():
-        realized_value = getattr(scenario, metric.value)
-        if isinstance(observed_value, Mapping):
-            if not isinstance(realized_value, Mapping):
-                return False
-            for key, value in observed_value.items():
-                if key not in realized_value or realized_value[key] != value:
-                    return False
-            continue
-        if realized_value != observed_value:
-            return False
-    return True
-
-
-def path_metric_totals(
-    *,
-    world: World,
-    scenario: Scenario,
-    path: tuple[Arc, ...],
-) -> Mapping[MetricName, float]:
-    left_turns = 0.0
-    for previous_arc, next_arc in zip(path, path[1:]):
-        turn = previous_arc[0], previous_arc[1], next_arc[1]
-        if turn in world.L:
-            left_turns += 1.0
-
-    return {
-        MetricName.TRAVEL_TIME: sum(scenario.travel_time[arc] for arc in path),
-        MetricName.LEFT_TURNS: left_turns,
-        MetricName.DISCOMFORT: sum(scenario.discomfort[arc] for arc in path),
-        MetricName.HAZARD: sum(scenario.hazard[arc] for arc in path),
-        MetricName.COST: sum(scenario.cost[arc] for arc in path),
-        MetricName.EMISSIONS: sum(scenario.emissions[arc] for arc in path),
-        MetricName.POLICING: sum(scenario.policing[arc[1]] for arc in path),
-    }
-
-
-def expected_path_metric_totals(
-    *,
-    world: World,
-    path: tuple[Arc, ...],
-    weighted_scenarios: tuple[tuple[float, Scenario], ...],
-) -> Mapping[MetricName, float]:
-    totals = {metric: 0.0 for metric in MetricName}
-    for scenario_weight, scenario in weighted_scenarios:
-        path_totals = path_metric_totals(
-            world=world,
-            scenario=scenario,
-            path=path,
-        )
-        for metric, value in path_totals.items():
-            totals[metric] += scenario_weight * value
-    return totals
-
 
 def sorted_metrics(
     metrics: frozenset[MetricName] | set[MetricName],
@@ -119,4 +55,3 @@ def format_posterior(probabilities: Mapping[str, float]) -> str:
     return ", ".join(
         f"{name}={probability:.3f}" for name, probability in probabilities.items()
     )
-

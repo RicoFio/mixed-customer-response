@@ -12,13 +12,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from ..bp.game import ConvergenceGame, Preference
-from ..bp.receivers import Receiver
+from ..bp.receivers import PriorRouteChoiceReceiver, Receiver
 from ..bp.senders import ScalarSender, Sender
 from ..bp.signals import MaskSignalPolicy, Signal
 from ..datastructures import (
@@ -33,14 +33,9 @@ from ..datastructures import (
     World,
 )
 from ..networks.toy_3 import create_sample_graph
-from ..opt import RoutingSolution, RoutingSolutionPoint
-from ..routing.routing_solvers import solve_routes
 
 from .helpers import (
     SignalObservationKey,
-    scenario_matches_signal,
-    path_metric_totals,
-    expected_path_metric_totals,
     sorted_metrics,
     canonical_signal_key,
     format_signal_key,
@@ -157,8 +152,6 @@ class GameOne(ConvergenceGame):
     _metric_order: tuple[MetricName, ...] = field(init=False, repr=False)
     _all_masks: tuple[frozenset[MetricName], ...] = field(init=False, repr=False)
     _logits: np.ndarray = field(init=False, repr=False)
-    _nominal_scenario: Scenario = field(init=False, repr=False)
-    _prior_solution: RoutingSolution = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if len(self.receivers) != 1:
@@ -199,16 +192,6 @@ class GameOne(ConvergenceGame):
         )
         clipped = np.clip(probabilities, 1e-6, 1.0 - 1e-6)
         self._logits = np.log(clipped / (1.0 - clipped))
-        self._nominal_scenario = Scenario.from_world("nominal", self.world)
-
-        self._prior_solution = solve_routes(
-            world=self.world,
-            source=self.receiver.demand.origin,
-            target=self.receiver.demand.destination,
-            scenarios=tuple(self.public_prior.support.values()),
-            config=self.receiver.routing_solver_config,
-            use_average=self.receiver.average_sampling,
-        )
 
     @property
     def receiver(self) -> Receiver:
@@ -252,7 +235,17 @@ class GameOne(ConvergenceGame):
         posterior_support: dict[str, Scenario] = {}
         posterior_probabilities: dict[str, float] = {}
         for scenario_name, scenario in self.public_prior.support.items():
-            if scenario_matches_signal(scenario=scenario, signal=signal):
+            for metric, observed_value in signal.value.items():
+                realized_value = getattr(scenario, metric.value)
+                if isinstance(observed_value, Mapping):
+                    if not isinstance(realized_value, Mapping) or any(
+                        key not in realized_value or realized_value[key] != value
+                        for key, value in observed_value.items()
+                    ):
+                        break
+                elif realized_value != observed_value:
+                    break
+            else:
                 posterior_support[scenario_name] = scenario
                 posterior_probabilities[scenario_name] = (
                     self.public_prior.probabilities[scenario_name]
@@ -267,59 +260,22 @@ class GameOne(ConvergenceGame):
             probabilities=posterior_probabilities,
         )
 
-    def _rescored_solution(self, posterior: FinitePrior) -> RoutingSolution:
-        weighted_scenarios = tuple(
-            (posterior.probabilities[name], scenario)
-            for name, scenario in posterior.support.items()
-        )
-        rescored_points = tuple(
-            replace(
-                point,
-                objective_values=expected_path_metric_totals(
-                    world=self.world,
-                    path=point.path,
-                    weighted_scenarios=weighted_scenarios,
-                ),
-            )
-            for point in self._prior_solution.points
-        )
-        return RoutingSolution(
-            raw_solution=self._prior_solution.raw_solution,
-            model=self._prior_solution.model,
-            points=rescored_points,
-        )
-
-    def _choose_route_for_posterior(
-        self,
-        posterior: FinitePrior,
-    ) -> RoutingSolutionPoint:
-        solution = self._rescored_solution(posterior)
-        max_labels = solution.induced_preorder(self.receiver.preference).maximal_elements()
-        if len(max_labels) > 1:
-            sender_preorder = solution.induced_preorder(
-                preference=self.sender.preference,
-                labels=max_labels,
-            )
-            max_labels = sender_preorder.maximal_elements()
-        chosen_label = sorted(max_labels, key=str)[0]
-        return solution.by_label(chosen_label)
-
-    def choose_route(self, signal: Signal) -> RoutingSolutionPoint:
-        posterior = self.posterior_from_signal(signal)
-        return self._choose_route_for_posterior(posterior)
+    def _receiver_after_signal(self, signal: Signal) -> Receiver:
+        self.receiver.reset_for_evaluation()
+        self.receiver.update_internal_belief(signal)
+        return self.receiver
 
     def _evaluate_signal(
         self,
         signal: Signal,
         realized_scenario: Scenario,
     ) -> dict[str, Any]:
-        posterior = self.posterior_from_signal(signal)
-        chosen_route = self._choose_route_for_posterior(posterior)
-        realized_metrics = path_metric_totals(
-            world=self.world,
-            scenario=realized_scenario,
-            path=chosen_route.path,
-        )
+        updated_receiver = self._receiver_after_signal(signal)
+        posterior = updated_receiver.belief
+        if not isinstance(posterior, FinitePrior):
+            raise NotImplementedError("GameOne currently requires a FinitePrior.")
+        chosen_route = updated_receiver.get_path_choice()
+        realized_metrics = updated_receiver.compute_realized_metrics(realized_scenario)
         return {
             "posterior": posterior,
             "chosen_route": chosen_route,
@@ -414,12 +370,13 @@ class GameOne(ConvergenceGame):
         self,
         rows: tuple[dict[str, Any], ...],
     ) -> tuple[dict[str, Any], ...]:
+        nominal_scenario = Scenario.from_world("nominal", self.world)
         verification_rows: list[dict[str, Any]] = []
         for row in rows:
             posterior = self.posterior_from_signal(row["signal"])
             observed_values: list[dict[str, Any]] = []
             for metric in sorted_metrics(frozenset(row["signal"].value)):
-                nominal_values = getattr(self._nominal_scenario, metric.value)
+                nominal_values = getattr(nominal_scenario, metric.value)
                 for key, realized_value in sorted(
                     row["signal"].value[metric].items(),
                     key=lambda item: str(item[0]),
@@ -504,6 +461,17 @@ class GameOne(ConvergenceGame):
             "expected_sender_utility": -expected_sender_metric,
             "expected_sender_metric": expected_sender_metric,
             "breakdown_rows": tuple(breakdown_rows),
+        }
+
+    def diagnostics(
+        self,
+        probabilities: Mapping[MetricName, float] | None = None,
+    ) -> dict[str, Any]:
+        if probabilities is None:
+            probabilities = self.signaling_scheme()
+
+        rows = self._scenario_mask_rows(probabilities)
+        return {
             "bayes_report": self.bayes_plausibility_report(
                 probabilities=probabilities,
                 rows=rows,
@@ -646,7 +614,7 @@ def build_informative_game_one(seed: int = 1) -> GameOne:
             },
         ),
     )
-    receiver = Receiver(
+    receiver = PriorRouteChoiceReceiver(
         individual=individual,
         rtype="human",
         preference=human_preference,
@@ -667,6 +635,7 @@ def build_informative_game_one(seed: int = 1) -> GameOne:
 if __name__ == "__main__":
     game = build_informative_game_one(seed=1)
     result = game.solve(max_iter=2000)
+    diagnostics = game.diagnostics(result["final_probabilities"])
 
     print("Converged:", result["converged"])
     print("Iterations:", result["iterations"])
@@ -674,7 +643,7 @@ if __name__ == "__main__":
     for metric, probability in result["final_probabilities"].items():
         print(f"  {metric.value}: {probability:.4f}")
 
-    bayes_report = result["bayes_report"]
+    bayes_report = diagnostics["bayes_report"]
     print("Bayes plausibility max error:", f"{bayes_report['max_error']:.3e}")
     print("Bayes posteriors:")
     for row in bayes_report["rows"]:
@@ -684,7 +653,7 @@ if __name__ == "__main__":
         )
 
     print("Mask semantics:")
-    for row in result["mask_verification_rows"]:
+    for row in diagnostics["mask_verification_rows"]:
         observation_text = ", ".join(
             (
                 f"{observed['metric'].value}[{observed['key']!r}] "

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -197,6 +198,20 @@ class RoutingSolution:
         return sorted(
             self.points,
             key=lambda point: tuple(point.objective_values[name] for name in metric_order),
+        )
+
+    def rescore(
+        self,
+        scorer: Callable[[tuple[Arc, ...]], Mapping[MetricName, float]],
+    ) -> RoutingSolution:
+        """Return the same routing solutions with updated objective values."""
+        return RoutingSolution(
+            raw_solution=self.raw_solution,
+            model=self.model,
+            points=tuple(
+                replace(point, objective_values=scorer(point.path))
+                for point in self.points
+            ),
         )
 
     @classmethod

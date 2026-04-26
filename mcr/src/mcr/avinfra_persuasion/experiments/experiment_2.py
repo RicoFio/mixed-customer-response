@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from ..bp.game import ConvergenceGame, Preference
-from ..bp.receivers import Receiver
+from ..bp.receivers import PriorRouteChoiceReceiver, Receiver
 from ..bp.senders import ScalarSender, Sender
 from ..bp.signals import MaskSignalPolicy, Signal
 from ..datastructures import (
@@ -44,84 +44,86 @@ def build_informative_prior(world: World) -> FinitePrior:
     bottom_to_target = ((1, 0), (1, 1))
 
     base_scenario = Scenario.from_world("base", world)
+    def make_scenario(
+        name: str,
+        *,
+        top_travel_time: float,
+        top_hazard: float,
+        node_policing: int,
+    ) -> Scenario:
+        return base_scenario.with_overrides(
+            name=name,
+            arc_overrides={
+                MetricName.TRAVEL_TIME: {
+                    source_right: top_travel_time,
+                    right_target: top_travel_time,
+                    source_to_bottom: 1.0,
+                    bottom_to_target: 1.0,
+                },
+                MetricName.HAZARD: {
+                    source_right: top_hazard,
+                    right_target: top_hazard,
+                    source_to_bottom: 0.5,
+                    bottom_to_target: 0.5,
+                },
+                MetricName.COST: {
+                    source_right: 1.0,
+                    right_target: 1.0,
+                    source_to_bottom: 0.0,
+                    bottom_to_target: 0.0,
+                },
+                MetricName.EMISSIONS: {
+                    source_right: 1.0,
+                    right_target: 1.0,
+                    source_to_bottom: 0.5,
+                    bottom_to_target: 0.5,
+                },
+            },
+            node_overrides={
+                MetricName.POLICING: {
+                    (0, 0): node_policing,
+                    (1, 0): 0.5,
+                    (1, 1): node_policing,
+                }
+            },
+        )
 
-    good = base_scenario.with_overrides(
-        name="instrumented_good",
-        arc_overrides={
-            MetricName.TRAVEL_TIME: {
-                source_right: 0.25,
-                right_target: 0.25,
-                source_to_bottom: 0.4,
-                bottom_to_target: 0.4,
-            },
-            MetricName.HAZARD: {
-                source_right: 0.0,
-                right_target: 0.0,
-                source_to_bottom: 1.0,
-                bottom_to_target: 1.0,
-            },
-            MetricName.COST: {
-                source_right: 1.0,
-                right_target: 1.0,
-                source_to_bottom: 0.0,
-                bottom_to_target: 0.0,
-            },
-            MetricName.EMISSIONS: {
-                source_right: 1.0,
-                right_target: 1.0,
-                source_to_bottom: 0.5,
-                bottom_to_target: 0.5,
-            },
-        },
-        node_overrides={
-            MetricName.POLICING: {
-                (0, 0): 0.0,
-                (1, 0): 0.0,
-                (1, 1): 0.0,
-            }
-        },
-    )
-    bad = base_scenario.with_overrides(
-        name="instrumented_bad",
-        arc_overrides={
-            MetricName.TRAVEL_TIME: {
-                source_right: 1.5,
-                right_target: 1.5,
-                source_to_bottom: 1.0,
-                bottom_to_target: 1.0,
-            },
-            MetricName.HAZARD: {
-                source_right: 1.0,
-                right_target: 1.0,
-                source_to_bottom: 1.0,
-                bottom_to_target: 1.0,
-            },
-            MetricName.COST: {
-                source_right: 1.0,
-                right_target: 1.0,
-                source_to_bottom: 0.0,
-                bottom_to_target: 0.0,
-            },
-            MetricName.EMISSIONS: {
-                source_right: 1.0,
-                right_target: 1.0,
-                source_to_bottom: 1.5,
-                bottom_to_target: 1.5,
-            },
-        },
-        node_overrides={
-            MetricName.POLICING: {
-                (0, 0): 1.0,
-                (1, 0): 1.0,
-                (1, 1): 1.0,
-            }
-        },
-    )
+    support = {
+        "fast_safe": make_scenario(
+            "fast_safe",
+            top_travel_time=0.25,
+            top_hazard=0.0,
+            node_policing=1,
+        ),
+        "fast_risky": make_scenario(
+            "fast_risky",
+            top_travel_time=0.25,
+            top_hazard=2.0,
+            node_policing=0,
+        ),
+        "slow_safe": make_scenario(
+            "slow_safe",
+            top_travel_time=1.5,
+            top_hazard=0.0,
+            node_policing=1,
+        ),
+        "slow_risky": make_scenario(
+            "slow_risky",
+            top_travel_time=1.5,
+            top_hazard=2.0,
+            node_policing=0,
+        ),
+    }
 
     return FinitePrior(
         name="prior",
-        support={good.name: good, bad.name: bad},
-        probabilities={good.name: 0.5, bad.name: 0.5},
+        support=support,
+        probabilities={
+            "fast_safe": 0.4,
+            "fast_risky": 0.2,
+            "slow_safe": 0.3,
+            "slow_risky": 0.1,
+        },
     )
 
 
@@ -213,9 +215,9 @@ class GameTwo(ConvergenceGame):
         receiver: Receiver,
         signal: Signal,
     ) -> Receiver:
-        updated_receiver = replace(receiver, belief=receiver.prior)
-        updated_receiver.update_internal_belief(signal)
-        return updated_receiver
+        receiver.reset_for_evaluation()
+        receiver.update_internal_belief(signal)
+        return receiver
 
     def _evaluate_signal(
         self,
@@ -233,6 +235,7 @@ class GameTwo(ConvergenceGame):
         realized_scenario = self.world.get_realized_metrics(
             path_choices=path_choices,
             name=f"realized_{believed_scenario.name}",
+            base_scenario=believed_scenario,
         )
         sender_metric = self._sender_metric()
         receiver_metrics = {
@@ -248,8 +251,8 @@ class GameTwo(ConvergenceGame):
             "path_choices": path_choices,
             "receiver_metrics": receiver_metrics,
             "sender_metric_value": sender_metric_value,
-            "path_label_counts": Counter(
-                choice.label for choice in path_choices.values()
+            "path_counts": Counter(
+                choice.path for choice in path_choices.values()
             ),
         }
 
@@ -286,7 +289,7 @@ class GameTwo(ConvergenceGame):
                         "mask_probability": mask_probability,
                         "sender_metric_value": evaluation["sender_metric_value"],
                         "weighted_contribution": weighted_contribution,
-                        "path_label_counts": dict(evaluation["path_label_counts"]),
+                        "path_counts": dict(evaluation["path_counts"]),
                         "realized_scenario_name": evaluation["realized_scenario"].name,
                     }
                 )
@@ -419,17 +422,15 @@ def build_informative_game_two(
         elements={
             MetricName.HAZARD,
             MetricName.COST,
-            MetricName.LEFT_TURNS,
         },
         relations={
-            (MetricName.COST, MetricName.LEFT_TURNS),
             (MetricName.COST, MetricName.HAZARD),
         },
     )
     # av_preference.draw_hasse_diagram()
     # plt.show()
     sender_preference = Preference(
-        elements={MetricName.COST},
+        elements={MetricName.TRAVEL_TIME},
         relations=set(),
     )
     sender = ScalarSender(
@@ -445,13 +446,13 @@ def build_informative_game_two(
                 }
             ),
             probabilities={
-                MetricName.TRAVEL_TIME: 0.9,
-                MetricName.HAZARD: 0.9,
+                MetricName.TRAVEL_TIME: 0.5,
+                MetricName.HAZARD: 0.5,
             },
         ),
     )
     receivers = [
-        Receiver(
+        PriorRouteChoiceReceiver(
             individual=individual,
             rtype="human" if individual.id.startswith("h") else "av",
             preference=human_preference if individual.id.startswith("h") else av_preference,
@@ -473,7 +474,7 @@ def build_informative_game_two(
 
 if __name__ == "__main__":
     game = build_informative_game_two(seed=1, n_humans=5, n_avs=5)
-    result = game.solve(max_iter=30)
+    result = game.solve(max_iter=500)
 
     print("Converged:", result["converged"])
     print("Iterations:", result["iterations"])
@@ -488,7 +489,7 @@ if __name__ == "__main__":
             f"(p={row['scenario_probability']:.3f}) | "
             f"mask={format_mask(row['mask'])} "
             f"(p={row['mask_probability']:.3f}) | "
-            f"path_counts={row['path_label_counts']} | "
+            f"path_counts={row['path_counts']} | "
             f"sender_metric={row['sender_metric_value']:.3f} | "
             f"contribution={row['weighted_contribution']:.3f}"
         )
