@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from enum import Enum
+
 from ..datastructures import MetricName, Prior, Scenario, World
 from .game import Preference
 from .signals import (
@@ -28,12 +30,18 @@ ARC_SIGNAL_METRICS = frozenset(
 NODE_SIGNAL_METRICS = frozenset({MetricName.POLICING})
 
 
+class Objective(Enum):
+    MAXIMIZE = 0
+    MINIMIZE = 1
+
+
 @dataclass
 class Sender:
     prior: Prior
     world: World
     preference: Preference
     signal_policy: SignalPolicy
+    objective: Objective = Objective.MINIMIZE
 
     def emit_signal(
         self,
