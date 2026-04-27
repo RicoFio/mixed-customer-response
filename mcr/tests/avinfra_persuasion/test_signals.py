@@ -7,6 +7,7 @@ from mcr.avinfra_persuasion.bp.signals import (
     MaskSignal,
     MaskSignalPolicy,
     StateDependentMaskSignalPolicy,
+    TypedStateDependentMaskSignalPolicy,
 )
 from mcr.avinfra_persuasion.datastructures import Scenario
 from mcr.avinfra_persuasion.datastructures import MetricName
@@ -156,3 +157,124 @@ def test_state_dependent_mask_signal_policy_samples_state_conditionally() -> Non
     )
 
     assert signal.metrics == frozenset({MetricName.HAZARD})
+
+
+def test_typed_state_dependent_mask_signal_policy_defaults_to_uniform_per_state_type() -> None:
+    policy = TypedStateDependentMaskSignalPolicy(
+        type_names=frozenset({"human", "av"}),
+        state_names=frozenset({"fast", "slow"}),
+        considered_metrics=frozenset({MetricName.TRAVEL_TIME, MetricName.HAZARD}),
+    )
+
+    assert policy.mask_probability("fast", "human", frozenset()) == pytest.approx(0.25)
+    assert policy.mask_probability(
+        "slow",
+        "av",
+        frozenset({MetricName.TRAVEL_TIME, MetricName.HAZARD}),
+    ) == pytest.approx(0.25)
+
+
+def test_typed_state_dependent_mask_signal_policy_rejects_invalid_keys() -> None:
+    with pytest.raises(ValueError, match="unknown states"):
+        TypedStateDependentMaskSignalPolicy(
+            type_names=frozenset({"human"}),
+            state_names=frozenset({"fast"}),
+            considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
+            state_type_probabilities={
+                "slow": {"human": {frozenset(): 1.0}},
+            },
+        )
+
+    with pytest.raises(ValueError, match="unknown receiver types"):
+        TypedStateDependentMaskSignalPolicy(
+            type_names=frozenset({"human"}),
+            state_names=frozenset({"fast"}),
+            considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
+            state_type_probabilities={
+                "fast": {"av": {frozenset(): 1.0}},
+            },
+        )
+
+    policy = TypedStateDependentMaskSignalPolicy(
+        type_names=frozenset({"human"}),
+        state_names=frozenset({"fast"}),
+        considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
+    )
+    with pytest.raises(ValueError, match="outside the considered set"):
+        policy.update_state_type_distribution(
+            "fast",
+            "human",
+            {frozenset({MetricName.HAZARD}): 1.0},
+        )
+
+
+def test_typed_state_dependent_mask_signal_policy_normalizes_and_updates_distribution() -> None:
+    policy = TypedStateDependentMaskSignalPolicy(
+        type_names=frozenset({"human", "av"}),
+        state_names=frozenset({"fast"}),
+        considered_metrics=frozenset({MetricName.TRAVEL_TIME, MetricName.HAZARD}),
+        state_type_probabilities={
+            "fast": {
+                "human": {
+                    frozenset({MetricName.TRAVEL_TIME}): 2.0,
+                    frozenset({MetricName.HAZARD}): 1.0,
+                },
+            },
+        },
+    )
+
+    distribution = policy.distribution_for_state_type("fast", "human")
+    assert sum(distribution.values()) == pytest.approx(1.0)
+    assert distribution[frozenset({MetricName.TRAVEL_TIME})] == pytest.approx(2.0 / 3.0)
+    assert distribution[frozenset({MetricName.HAZARD})] == pytest.approx(1.0 / 3.0)
+    assert distribution[frozenset()] == pytest.approx(0.0)
+    assert policy.mask_probability("fast", "av", frozenset()) == pytest.approx(0.25)
+
+    policy.update_state_type_distribution(
+        "fast",
+        "human",
+        {frozenset({MetricName.HAZARD}): 1.0},
+    )
+
+    assert policy.mask_probability(
+        "fast",
+        "human",
+        frozenset({MetricName.HAZARD}),
+    ) == pytest.approx(1.0)
+
+
+def test_typed_state_dependent_mask_signal_policy_samples_state_and_type_conditionally() -> None:
+    policy = TypedStateDependentMaskSignalPolicy(
+        type_names=frozenset({"human", "av"}),
+        state_names=frozenset({"fast"}),
+        considered_metrics=frozenset({MetricName.TRAVEL_TIME, MetricName.HAZARD}),
+        state_type_probabilities={
+            "fast": {
+                "human": {frozenset({MetricName.TRAVEL_TIME}): 1.0},
+                "av": {frozenset({MetricName.HAZARD}): 1.0},
+            },
+        },
+    )
+    scenario = Scenario(
+        name="fast",
+        travel_time={("s", "t"): 1.0},
+        discomfort={("s", "t"): 0.0},
+        hazard={("s", "t"): 0.0},
+        cost={("s", "t"): 0.0},
+        emissions={("s", "t"): 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+
+    human_signal = policy.sample(
+        realized_scenario=scenario,
+        receiver_type="human",
+        rng=np.random.default_rng(3),
+    )
+    av_signal = policy.sample(
+        realized_scenario=scenario,
+        receiver_type="av",
+        rng=np.random.default_rng(3),
+    )
+
+    assert human_signal.metrics == frozenset({MetricName.TRAVEL_TIME})
+    assert av_signal.metrics == frozenset({MetricName.HAZARD})

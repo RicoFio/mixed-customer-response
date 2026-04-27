@@ -1119,6 +1119,11 @@ dependencies = [
     { name = "tqdm" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "mcr" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "benpy", git = "https://github.com/markobud/benpy?rev=development" },
@@ -1132,6 +1137,9 @@ requires-dist = [
     { name = "taichi", specifier = ">=1.7.4" },
     { name = "tqdm", specifier = ">=4.67.3" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "mcr", editable = "mcr" }]
 
 [[package]]
 name = "nbclient"

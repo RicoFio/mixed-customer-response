@@ -23,5 +23,10 @@ members = [
 ]
 
 [tool.uv.sources]
-mcr = { workspace = true }
 benpy = { git = "https://github.com/markobud/benpy", rev = "development" }
+mcr = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "mcr",
+]

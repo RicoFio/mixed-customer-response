@@ -16,17 +16,20 @@ from ..helpers import (
 )
 from .base import BernoulliMaskGameBase, FiniteDifferenceAdamMixin
 
+
 @dataclass
-class GameOne(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
+class OSORGame(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
     """
-    Simple one sender / one receiver game.
+    Simple, one sender / one receiver game with a policy that is not state dependent and where the sender can choose to release information about the measures for the instrumented arcs. The optimal policy is found through finite differences using the ADAM optimizer.
+    
+    The policy either discloses the real observation of the sender or no signal. That is the idea of the Bernoulli Mask mixin.
     """
 
-    _validation_name = "GameOne"
+    _validation_name = "OSORGame"
     _exact_receivers = 1
-    _receiver_count_error = "GameOne currently supports exactly one receiver."
-    _finite_prior_error = "GameOne currently requires a FinitePrior."
-    _signal_policy_error = "GameOne currently requires a MaskSignalPolicy sender."
+    _receiver_count_error = "OSORGame currently supports exactly one receiver."
+    _finite_prior_error = "OSORGame currently requires a FinitePrior."
+    _signal_policy_error = "OSORGame currently requires a MaskSignalPolicy sender."
 
     @property
     def receiver(self) -> Receiver:
@@ -64,7 +67,7 @@ class GameOne(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
             probabilities=posterior_probabilities,
         )
 
-    def _receiver_after_signal(self, signal: Signal) -> Receiver:
+    def _receiver_after_signal(self, receiver: Receiver, signal: Signal) -> Receiver:
         self.receiver.reset_for_evaluation()
         self.receiver.update_internal_belief(signal)
         return self.receiver
@@ -74,10 +77,10 @@ class GameOne(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
         signal: Signal,
         realized_scenario: Scenario,
     ) -> dict[str, Any]:
-        updated_receiver = self._receiver_after_signal(signal)
+        updated_receiver = self._receiver_after_signal(self.receiver, signal)
         posterior = updated_receiver.belief
         if not isinstance(posterior, FinitePrior):
-            raise NotImplementedError("GameOne currently requires a FinitePrior.")
+            raise NotImplementedError("OSORGame currently requires a FinitePrior.")
         chosen_route = updated_receiver.get_path_choice()
         realized_metrics = updated_receiver.compute_realized_metrics(realized_scenario)
         return {

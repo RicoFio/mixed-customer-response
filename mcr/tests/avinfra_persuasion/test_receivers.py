@@ -6,12 +6,17 @@ from typing import Any, cast
 import pytest
 
 from mcr.avinfra_persuasion.bp import receivers as receivers_module
-from mcr.avinfra_persuasion.bp.receivers import Receiver
+from mcr.avinfra_persuasion.bp.receivers import (
+    ExperiencedRouteChoiceReceiver,
+    Receiver,
+)
 from mcr.avinfra_persuasion.bp.senders import ScalarSender
 from mcr.avinfra_persuasion.bp.signals import (
+    MaskSignal,
     MaskSignalPolicy,
     Signal,
     StateDependentMaskSignalPolicy,
+    TypedStateDependentMaskSignalPolicy,
 )
 from mcr.avinfra_persuasion.datastructures import (
     Arc,
@@ -393,6 +398,84 @@ def test_update_internal_belief_uses_state_dependent_mask_likelihood() -> None:
     assert posterior.probabilities["b"] == pytest.approx(0.1)
 
 
+def test_update_internal_belief_uses_receiver_type_for_typed_state_dependent_likelihood() -> None:
+    world, arc = _receiver_world()
+    scenario_a = Scenario(
+        name="a",
+        travel_time={arc: 1.0},
+        discomfort={arc: 1.0},
+        hazard={arc: 0.0},
+        cost={arc: 0.0},
+        emissions={arc: 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+    scenario_b = Scenario(
+        name="b",
+        travel_time={arc: 1.0},
+        discomfort={arc: 1.0},
+        hazard={arc: 0.0},
+        cost={arc: 0.0},
+        emissions={arc: 0.0},
+        policing={"s": 0.0, "t": 0.0},
+    )
+    prior = FinitePrior(
+        name="prior",
+        support={"a": scenario_a, "b": scenario_b},
+        probabilities={"a": 0.5, "b": 0.5},
+    )
+    sender = ScalarSender(
+        prior=prior,
+        world=world,
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        signal_policy=TypedStateDependentMaskSignalPolicy(
+            type_names=frozenset({"human", "av"}),
+            state_names=frozenset(prior.support),
+            considered_metrics=frozenset({MetricName.TRAVEL_TIME}),
+            state_type_probabilities={
+                "a": {
+                    "human": {frozenset(): 0.9},
+                    "av": {frozenset(): 0.2},
+                },
+                "b": {
+                    "human": {frozenset(): 0.1},
+                    "av": {frozenset(): 0.8},
+                },
+            },
+        ),
+    )
+    human_receiver = Receiver(
+        individual=next(iter(world.individuals)),
+        rtype="human",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        sender=sender,
+        n_scenarios=1,
+    )
+    av_receiver = Receiver(
+        individual=next(iter(world.individuals)),
+        rtype="av",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        sender=sender,
+        n_scenarios=1,
+    )
+    signal = MaskSignal(metrics=frozenset())
+
+    human_receiver.update_internal_belief(signal)
+    av_receiver.update_internal_belief(signal)
+
+    human_posterior = human_receiver.belief
+    av_posterior = av_receiver.belief
+    assert isinstance(human_posterior, FinitePrior)
+    assert isinstance(av_posterior, FinitePrior)
+    assert human_posterior.probabilities["a"] == pytest.approx(0.9)
+    assert human_posterior.probabilities["b"] == pytest.approx(0.1)
+    assert av_posterior.probabilities["a"] == pytest.approx(0.2)
+    assert av_posterior.probabilities["b"] == pytest.approx(0.8)
+
+
 def test_update_internal_belief_keeps_old_behavior_for_state_independent_mask() -> None:
     world, arc = _receiver_world()
     scenario_a = Scenario(
@@ -541,7 +624,7 @@ def test_route_choice_receiver_caches_prior_paths_and_rescores_posterior(
             probabilities={MetricName.TRAVEL_TIME: 1.0},
         ),
     )
-    receiver = receivers_module.RouteChoiceReceiver(
+    receiver = receivers_module.PriorRouteChoiceReceiver(
         individual=next(iter(world.individuals)),
         rtype="test",
         preference=total_order_from_list([MetricName.TRAVEL_TIME]),
@@ -577,3 +660,165 @@ def test_route_choice_receiver_caches_prior_paths_and_rescores_posterior(
     assert first_choice.label == "A"
     assert second_choice.label == "B"
     assert call_count == 1
+
+
+def test_experienced_route_choice_receiver_blends_private_route_beliefs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, direct, via_left, via_right = _two_route_world()
+    scenario = Scenario(
+        name="rho0",
+        travel_time={direct: 1.0, via_left: 3.0, via_right: 3.0},
+        discomfort={direct: 1.0, via_left: 1.0, via_right: 1.0},
+        hazard={direct: 0.0, via_left: 0.0, via_right: 0.0},
+        cost={direct: 0.0, via_left: 0.0, via_right: 0.0},
+        emissions={direct: 0.0, via_left: 0.0, via_right: 0.0},
+        policing={"s": 0.0, "m": 0.0, "t": 0.0},
+    )
+    prior = FinitePrior(
+        name="prior",
+        support={scenario.name: scenario},
+        probabilities={scenario.name: 1.0},
+    )
+    receiver = ExperiencedRouteChoiceReceiver(
+        individual=next(iter(world.individuals)),
+        rtype="test",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        n_scenarios=1,
+        private_belief_weight=1.0,
+    )
+    cached_solution = _solution_for_points(
+        (
+            _point("A", (direct,), travel_time=0.0),
+            _point("B", (via_left, via_right), travel_time=0.0),
+        )
+    )
+
+    monkeypatch.setattr(receivers_module, "solve_routes", lambda **_: cached_solution)
+
+    receiver._private_route_beliefs[(direct,)] = {
+        MetricName.TRAVEL_TIME: 9.0,
+        MetricName.DISCOMFORT: 0.0,
+        MetricName.HAZARD: 0.0,
+        MetricName.COST: 0.0,
+        MetricName.EMISSIONS: 0.0,
+        MetricName.POLICING: 0.0,
+    }
+
+    choice = receiver.get_path_choice()
+
+    assert choice.path == (via_left, via_right)
+
+    receiver.reset_public_belief()
+    receiver.private_belief_weight = 0.0
+    choice_without_private_weight = receiver.get_path_choice()
+
+    assert choice_without_private_weight.path == (direct,)
+
+
+def test_experienced_route_choice_receiver_updates_private_beliefs_with_ewma() -> None:
+    world, direct, _, _ = _two_route_world()
+    scenario = Scenario(
+        name="rho0",
+        travel_time={direct: 1.0},
+        discomfort={direct: 1.0},
+        hazard={direct: 0.0},
+        cost={direct: 0.0},
+        emissions={direct: 0.0},
+        policing={"s": 0.0, "m": 0.0, "t": 0.0},
+    )
+    prior = FinitePrior(
+        name="prior",
+        support={scenario.name: scenario},
+        probabilities={scenario.name: 1.0},
+    )
+    receiver = ExperiencedRouteChoiceReceiver(
+        individual=next(iter(world.individuals)),
+        rtype="test",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        n_scenarios=1,
+        private_ewma_alpha=0.25,
+    )
+    choice = _point("A", (direct,), travel_time=0.0)
+    receiver._action_history.append(choice)
+
+    first_realized = {
+        MetricName.TRAVEL_TIME: 10.0,
+        MetricName.LEFT_TURNS: 0.0,
+        MetricName.DISCOMFORT: 2.0,
+        MetricName.HAZARD: 3.0,
+        MetricName.COST: 4.0,
+        MetricName.EMISSIONS: 5.0,
+        MetricName.POLICING: 6.0,
+    }
+    receiver.update_private_route_belief(first_realized)
+    second_realized = {
+        MetricName.TRAVEL_TIME: 4.0,
+        MetricName.LEFT_TURNS: 0.0,
+        MetricName.DISCOMFORT: 6.0,
+        MetricName.HAZARD: 7.0,
+        MetricName.COST: 8.0,
+        MetricName.EMISSIONS: 9.0,
+        MetricName.POLICING: 10.0,
+    }
+    receiver.update_private_route_belief(second_realized)
+
+    private_belief = receiver.private_route_beliefs[(direct,)]
+    assert MetricName.LEFT_TURNS not in private_belief
+    assert private_belief[MetricName.TRAVEL_TIME] == pytest.approx(8.5)
+    assert private_belief[MetricName.COST] == pytest.approx(5.0)
+
+
+def test_experienced_route_choice_receiver_reset_lifecycle() -> None:
+    world, direct, _, _ = _two_route_world()
+    scenario = Scenario(
+        name="rho0",
+        travel_time={direct: 1.0},
+        discomfort={direct: 1.0},
+        hazard={direct: 0.0},
+        cost={direct: 0.0},
+        emissions={direct: 0.0},
+        policing={"s": 0.0, "m": 0.0, "t": 0.0},
+    )
+    prior = FinitePrior(
+        name="prior",
+        support={scenario.name: scenario},
+        probabilities={scenario.name: 1.0},
+    )
+    receiver = ExperiencedRouteChoiceReceiver(
+        individual=next(iter(world.individuals)),
+        rtype="test",
+        preference=total_order_from_list([MetricName.TRAVEL_TIME]),
+        prior=prior,
+        world=world,
+        n_scenarios=1,
+    )
+    receiver._cached_prior_solution = _solution_for_points(
+        (_point("A", (direct,), travel_time=0.0),)
+    )
+    receiver._private_route_beliefs[(direct,)] = {
+        MetricName.TRAVEL_TIME: 1.0,
+        MetricName.DISCOMFORT: 1.0,
+        MetricName.HAZARD: 0.0,
+        MetricName.COST: 0.0,
+        MetricName.EMISSIONS: 0.0,
+        MetricName.POLICING: 0.0,
+    }
+    receiver.belief = FinitePrior(
+        name="posterior",
+        support={scenario.name: scenario},
+        probabilities={scenario.name: 1.0},
+    )
+
+    receiver.reset_public_belief()
+    assert receiver.private_route_beliefs[(direct,)][MetricName.TRAVEL_TIME] == 1.0
+    assert receiver._cached_prior_solution is not None
+    assert receiver.belief == receiver.prior
+
+    receiver.reset_for_rollout()
+    assert receiver.private_route_beliefs == {}
+    assert receiver._cached_prior_solution is not None
