@@ -14,15 +14,13 @@ from .base import BernoulliMaskGameBase, FiniteDifferenceAdamMixin
 @dataclass
 class OSMRGame(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
     """
-    One sender, multiple receivers, general policy, public signal.
-
-    Args:
-        FiniteDifferenceAdamMixin (_type_): _description_
-        BernoulliMaskGameBase (_type_): _description_
-
-    Returns:
-        _type_: _description_
+    - OS: One scalar Sender
+    - MR: Multiple Receivers with multi-measure preferences
+    - State-independent (general) policy
+    - Single public signal
+    - Finite public prior
     """
+    
     _validation_name = "OSMRGame"
     _receiver_count_error = "OSMRGame requires at least one receiver."
     _finite_prior_error = "OSMRGame currently requires a FinitePrior."

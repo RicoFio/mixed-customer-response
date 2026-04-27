@@ -329,6 +329,9 @@ class InfrastructureGraph:
 class Demand:
     origin: Node
     destination: Node
+    
+    def __str__(self) -> str:
+        return str(self.origin) + '_' + str(self.destination)
 
 
 @dataclass(frozen=True)

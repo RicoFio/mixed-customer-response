@@ -33,7 +33,7 @@ from .helpers import (
 from .plotting import plot_policy_gradient_field, plot_policy_learning
 from matplotlib import pyplot as plt
 
-from .games.game_one import GameOne
+from .games.osor import OSORGame
 
 
 def build_informative_prior(world: World) -> FinitePrior:
@@ -156,7 +156,7 @@ def build_informative_prior(world: World) -> FinitePrior:
     )
 
 
-def build_informative_game_one(seed: int = 1) -> GameOne:
+def build_informative_game_one(seed: int = 1) -> OSORGame:
     network = create_sample_graph(instrumented="tr")
     origin: Node = (0, 0)
     target: Node = (1, 1)
@@ -210,7 +210,7 @@ def build_informative_game_one(seed: int = 1) -> GameOne:
         sender=sender,
         n_scenarios=len(prior.support),
     )
-    return GameOne(
+    return OSORGame(
         sender=sender,
         receivers=[receiver],
         world=world,

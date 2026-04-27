@@ -14,14 +14,11 @@ from .base import FiniteDifferenceAdamMixin, StateDependentMaskGameBase, Enumera
 @dataclass
 class OSMRSPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, EnumerationMixin):
     """
-    One sender, multiple receivers, state-dependent policy, public signal.
-
-    Args:
-        FiniteDifferenceAdamMixin (_type_): _description_
-        StateDependentMaskGameBase (_type_): _description_
-
-    Returns:
-        _type_: _description_
+    - OS: One scalar Sender
+    - MR: Multiple Receivers with multi-measure preferences
+    - SP: State-dependent policy
+    - Single public signal
+    - Finite public prior
     """
     _validation_name = "OSMRGame"
     _receiver_count_error = "OSMRGame requires at least one receiver."

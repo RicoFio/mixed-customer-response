@@ -20,9 +20,12 @@ from .base import BernoulliMaskGameBase, FiniteDifferenceAdamMixin
 @dataclass
 class OSORGame(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
     """
-    Simple, one sender / one receiver game with a policy that is not state dependent and where the sender can choose to release information about the measures for the instrumented arcs. The optimal policy is found through finite differences using the ADAM optimizer.
-    
-    The policy either discloses the real observation of the sender or no signal. That is the idea of the Bernoulli Mask mixin.
+    In this game:
+        - Scalar sender
+        - Single receiver with multi-measure preferences
+        - State-independent (general) policy
+        - Single public signal
+        - Finite public prior
     """
 
     _validation_name = "OSORGame"
