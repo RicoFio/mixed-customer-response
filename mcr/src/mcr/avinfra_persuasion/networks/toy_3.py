@@ -11,7 +11,7 @@ from ..datastructures import (
 )
 
 
-def create_sample_graph() -> InfrastructureGraph:
+def create_sample_graph(instrumented: str = "tlbr") -> InfrastructureGraph:
     """Create a directed grid with bidirectional horizontal and vertical arcs."""
 
     G = nx.DiGraph()
@@ -19,21 +19,28 @@ def create_sample_graph() -> InfrastructureGraph:
         (row, col) for row in range(2) for col in range(2)
     ]
     G.add_nodes_from(grid_nodes)
-    instrumented_edges: set[Arc] = {
-        ((0, 0), (0, 1)), 
-        ((0, 1), (1, 1)),
-        ((0, 0), (1, 0)), 
-        ((1, 0), (1, 1)),
-    }
+    
+    instrumented_edge_list: list[Arc] = []
+    
+    if "t" in instrumented:
+        instrumented_edge_list.append(((0, 0), (0, 1))) 
+    if "r" in instrumented:
+        instrumented_edge_list.append(((0, 1), (1, 1))) 
+    if "l" in instrumented:
+        instrumented_edge_list.append(((0, 0), (1, 0))) 
+    if "b" in instrumented:
+        instrumented_edge_list.append(((1, 0), (1, 1)))
+        
+    instrumented_edges: set[Arc] = set(instrumented_edge_list)
 
     # Right
-    G.add_edge((0, 0), (0, 1), travel_time=0.5, distance=1, capacity=2, discomfort=0.5, hazard=1, cost=0.5)
+    G.add_edge((0, 0), (0, 1), travel_time=0.5, distance=1, capacity=4, discomfort=0.5, hazard=1, cost=0.5)
     # Down
-    G.add_edge((0, 0), (1, 0), travel_time=1.5, distance=1, capacity=2, discomfort=1, hazard=0, cost=1)
+    G.add_edge((0, 0), (1, 0), travel_time=1.5, distance=1, capacity=4, discomfort=1, hazard=0, cost=1)
     # Right Down
-    G.add_edge((0, 1), (1, 1), travel_time=0.5, distance=1, capacity=2, discomfort=1, hazard=2, cost=0.5)
+    G.add_edge((0, 1), (1, 1), travel_time=0.5, distance=1, capacity=4, discomfort=1, hazard=2, cost=0.5)
     # Down Left
-    G.add_edge((1, 0), (1, 1), travel_time=1.5, distance=1, capacity=2, discomfort=1, hazard=0, cost=1)
+    G.add_edge((1, 0), (1, 1), travel_time=1.5, distance=1, capacity=4, discomfort=1, hazard=0, cost=1)
 
     arcs: set[Arc] = set(G.edges)
 
