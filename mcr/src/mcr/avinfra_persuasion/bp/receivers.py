@@ -154,7 +154,9 @@ class Receiver:
                 labels=max_elements,
             )
             max_elements = sender_pre_order.maximal_elements()
-        max_element = self._rng.choice(tuple(sorted(max_elements, key=str)))
+        # Making this tie breaking deterministic because otherwise we run into gradient issues.
+        # max_element = self._rng.choice(tuple(sorted(max_elements, key=str)))
+        max_element = sorted(max_elements, key=str)[0]
         return solution.by_label(str(max_element))
 
     def _current_belief(self) -> WorldBelief | Prior:

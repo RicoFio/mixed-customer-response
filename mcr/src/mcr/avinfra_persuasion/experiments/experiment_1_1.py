@@ -44,94 +44,120 @@ def build_informative_prior(world: World) -> FinitePrior:
 
     base_scenario = Scenario.from_world("base", world)
 
-    good = base_scenario.with_overrides(
-        name="instrumented_good",
-        arc_overrides={
-            MetricName.TRAVEL_TIME: {
-                source_right: 0.45,
-                right_target: 0.45,
-                source_to_bottom: 1.20,
-                bottom_to_target: 1.20,
+    def scenario(
+        *,
+        name: str,
+        top_travel_time: float,
+        bottom_travel_time: float,
+        top_cost: float,
+        bottom_cost: float,
+        top_hazard: float,
+        bottom_hazard: float,
+        top_emissions: float,
+        bottom_emissions: float,
+        policing: float,
+    ) -> Scenario:
+        return base_scenario.with_overrides(
+            name=name,
+            arc_overrides={
+                MetricName.TRAVEL_TIME: {
+                    source_right: top_travel_time,
+                    right_target: top_travel_time,
+                    source_to_bottom: bottom_travel_time,
+                    bottom_to_target: bottom_travel_time,
+                },
+                MetricName.HAZARD: {
+                    source_right: top_hazard,
+                    right_target: top_hazard,
+                    source_to_bottom: bottom_hazard,
+                    bottom_to_target: bottom_hazard,
+                },
+                MetricName.COST: {
+                    source_right: top_cost,
+                    right_target: top_cost,
+                    source_to_bottom: bottom_cost,
+                    bottom_to_target: bottom_cost,
+                },
+                MetricName.EMISSIONS: {
+                    source_right: top_emissions,
+                    right_target: top_emissions,
+                    source_to_bottom: bottom_emissions,
+                    bottom_to_target: bottom_emissions,
+                },
             },
-            MetricName.HAZARD: {
-                source_right: 0.30,
-                right_target: 0.30,
-                source_to_bottom: 1.00,
-                bottom_to_target: 1.00,
+            node_overrides={
+                MetricName.POLICING: {
+                    (0, 0): policing,
+                    (1, 0): policing,
+                    (1, 1): policing,
+                }
             },
-            MetricName.COST: {
-                source_right: 2.00,
-                right_target: 2.00,
-                source_to_bottom: 0.00,
-                bottom_to_target: 0.40,
-            },
-            MetricName.EMISSIONS: {
-                source_right: 0.60,
-                right_target: 0.60,
-                source_to_bottom: 1.40,
-                bottom_to_target: 1.40,
-            },
-        },
-        node_overrides={
-            MetricName.POLICING: {
-                (0, 0): 0.0,
-                (1, 0): 0.0,
-                (1, 1): 0.0,
-            }
-        },
+        )
+
+    fast_expensive = scenario(
+        name="fast_expensive",
+        top_travel_time=0.45,
+        bottom_travel_time=0.90,
+        top_cost=2.00,
+        bottom_cost=0.20,
+        top_hazard=0.30,
+        bottom_hazard=0.80,
+        top_emissions=0.60,
+        bottom_emissions=1.10,
+        policing=0.0,
     )
-    bad = base_scenario.with_overrides(
-        name="instrumented_bad",
-        arc_overrides={
-            MetricName.TRAVEL_TIME: {
-                source_right: 1.80,
-                right_target: 1.80,
-                source_to_bottom: 0.95,
-                bottom_to_target: 0.95,
-            },
-            MetricName.HAZARD: {
-                source_right: 1.20,
-                right_target: 1.20,
-                source_to_bottom: 0.50,
-                bottom_to_target: 0.50,
-            },
-            MetricName.COST: {
-                source_right: 0.60,
-                right_target: 0.60,
-                source_to_bottom: 1.40,
-                bottom_to_target: 1.40,
-            },
-            MetricName.EMISSIONS: {
-                source_right: 1.60,
-                right_target: 1.60,
-                source_to_bottom: 0.90,
-                bottom_to_target: 0.90,
-            },
-        },
-        node_overrides={
-            MetricName.POLICING: {
-                (0, 0): 1.0,
-                (1, 0): 1.0,
-                (1, 1): 1.0,
-            }
-        },
+    fast_cheap = scenario(
+        name="fast_cheap",
+        top_travel_time=0.45,
+        bottom_travel_time=0.35,
+        top_cost=0.60,
+        bottom_cost=1.40,
+        top_hazard=0.30,
+        bottom_hazard=0.20,
+        top_emissions=0.60,
+        bottom_emissions=0.50,
+        policing=0.0,
+    )
+    slow_expensive = scenario(
+        name="slow_expensive",
+        top_travel_time=1.40,
+        bottom_travel_time=0.80,
+        top_cost=2.00,
+        bottom_cost=1.40,
+        top_hazard=1.20,
+        bottom_hazard=0.50,
+        top_emissions=1.60,
+        bottom_emissions=0.90,
+        policing=1.0,
+    )
+    slow_cheap = scenario(
+        name="slow_cheap",
+        top_travel_time=1.40,
+        bottom_travel_time=1.60,
+        top_cost=0.60,
+        bottom_cost=1.40,
+        top_hazard=1.20,
+        bottom_hazard=1.60,
+        top_emissions=1.60,
+        bottom_emissions=1.80,
+        policing=1.0,
     )
 
+    support = {
+        fast_expensive.name: fast_expensive,
+        fast_cheap.name: fast_cheap,
+        slow_expensive.name: slow_expensive,
+        slow_cheap.name: slow_cheap,
+    }
     return FinitePrior(
         name="prior",
-        support={
-            good.name: good,
-            bad.name: bad,
-        },
-        probabilities={
-            good.name: 0.5,
-            bad.name: 0.5,
-        },
+        support=support,
+        probabilities={scenario_name: 1.0 for scenario_name in support},
     )
 
 
 def build_informative_game_one(seed: int = 1) -> GameOne:
-    network = create_sample_graph()
+    network = create_sample_graph(instrumented="tr")
     origin: Node = (0, 0)
     target: Node = (1, 1)
     individual = Individual(id="robert", demand=Demand(origin, target))
@@ -171,7 +197,7 @@ def build_informative_game_one(seed: int = 1) -> GameOne:
             probabilities={
                 MetricName.TRAVEL_TIME: 0.2,
                 # MetricName.HAZARD: 0.2,
-                MetricName.COST: 0.2,
+                MetricName.COST: 0.4,
             },
         ),
     )

@@ -14,7 +14,7 @@ def _top_path() -> tuple[Arc, ...]:
     )
 
 
-def _instrumented_path() -> tuple[Arc, ...]:
+def _bottom_path() -> tuple[Arc, ...]:
     return (
         ((0, 0), (1, 0)),
         ((1, 0), (1, 1)),
@@ -28,31 +28,51 @@ def test_bayes_plausibility_report_reconstructs_prior() -> None:
 
     assert report["max_error"] < 1e-10
     assert sum(row["signal_probability"] for row in report["rows"]) == pytest.approx(1.0)
-    assert report["reconstructed_prior"]["instrumented_good"] == pytest.approx(0.5)
-    assert report["reconstructed_prior"]["instrumented_bad"] == pytest.approx(0.5)
+    assert report["reconstructed_prior"] == {
+        "instrumented_good": pytest.approx(0.5),
+        "instrumented_bad": pytest.approx(0.5),
+    }
 
 
 def test_hidden_mask_keeps_prior_and_revealing_mask_updates_posterior() -> None:
     game = build_informative_game_one(seed=3)
-    good_scenario = game.public_prior.support["instrumented_good"]
+    scenario = game.public_prior.support["instrumented_good"]
 
     empty_signal = game.sender.materialize_signal(
         mask=frozenset(),
-        realized_scenario=good_scenario,
+        realized_scenario=scenario,
     )
-    reveal_signal = game.sender.materialize_signal(
+    cost_signal = game.sender.materialize_signal(
         mask=frozenset({MetricName.COST}),
-        realized_scenario=good_scenario,
+        realized_scenario=scenario,
+    )
+    travel_time_signal = game.sender.materialize_signal(
+        mask=frozenset({MetricName.TRAVEL_TIME}),
+        realized_scenario=scenario,
+    )
+    full_signal = game.sender.materialize_signal(
+        mask=frozenset({MetricName.COST, MetricName.TRAVEL_TIME}),
+        realized_scenario=scenario,
     )
 
     empty_posterior = game.posterior_from_signal(empty_signal)
-    reveal_posterior = game.posterior_from_signal(reveal_signal)
+    cost_posterior = game.posterior_from_signal(cost_signal)
+    travel_time_posterior = game.posterior_from_signal(travel_time_signal)
+    full_posterior = game.posterior_from_signal(full_signal)
 
     assert empty_signal.value == {}
     assert empty_posterior.probabilities == game.public_prior.probabilities
-    assert reveal_signal.value[MetricName.COST][((0, 0), (1, 0))] == 0.0
-    assert reveal_posterior.probabilities == {
-        "instrumented_good": 1.0,
+    assert set(cost_signal.value[MetricName.COST]) == game.world.I
+    assert cost_signal.value[MetricName.COST][((0, 0), (1, 0))] == 0.0
+    assert cost_signal.value[MetricName.COST][((1, 0), (1, 1))] == 0.4
+    assert cost_posterior.probabilities == {
+        "instrumented_good": pytest.approx(1.0),
+    }
+    assert travel_time_posterior.probabilities == {
+        "instrumented_good": pytest.approx(1.0),
+    }
+    assert full_posterior.probabilities == {
+        "instrumented_good": pytest.approx(1.0),
     }
 
 
@@ -85,9 +105,9 @@ def test_stateless_evaluator_repeatability_and_route_flip() -> None:
         bad_scenario,
     )["chosen_route"]
 
-    assert first_choice.path == second_choice.path == _instrumented_path()
+    assert first_choice.path == second_choice.path == _bottom_path()
     assert good_revealed_choice.path == _top_path()
-    assert bad_revealed_choice.path == _instrumented_path()
+    assert bad_revealed_choice.path == _bottom_path()
 
 
 def test_evaluate_policy_returns_breakdown_and_nonzero_gradient() -> None:
@@ -101,4 +121,14 @@ def test_evaluate_policy_returns_breakdown_and_nonzero_gradient() -> None:
         row["mask"] == (MetricName.COST,) and row["signal_summary"] != "<empty>"
         for row in evaluation["breakdown_rows"]
     )
+    assert all(component > 0.0 for component in gradient)
     assert np.linalg.norm(gradient) > 1e-6
+
+
+def test_solve_updates_sender_policy() -> None:
+    game = build_informative_game_one(seed=3)
+
+    result = game.solve(max_iter=1)
+
+    for metric, probability in result["final_probabilities"].items():
+        assert probability == pytest.approx(game.sender.signal_policy.probability(metric))

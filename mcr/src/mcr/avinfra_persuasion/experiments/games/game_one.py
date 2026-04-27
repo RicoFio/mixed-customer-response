@@ -2,135 +2,43 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
-
-from ...bp.game import ConvergenceGame
 from ...bp.receivers import Receiver
-from ...bp.senders import Sender, Objective
-from ...bp.signals import MaskSignalPolicy, Signal
-from ...datastructures import (
-    FinitePrior,
-    MetricName,
-    Prior,
-    Scenario,
-    World,
-)
-
+from ...bp.signals import Signal
+from ...datastructures import FinitePrior, MetricName, Scenario
 from ..helpers import (
     SignalObservationKey,
-    sorted_metrics,
     canonical_signal_key,
     format_signal_key,
+    sorted_metrics,
 )
-
-
+from .base import BernoulliMaskGameBase, FiniteDifferenceAdamMixin
 
 @dataclass
-class GameOne(ConvergenceGame):
+class GameOne(FiniteDifferenceAdamMixin, BernoulliMaskGameBase):
     """
-    Simple one sender / one receiver game that allows us to 
-
-    Args:
-        ConvergenceGame (_type_): _description_
-
-    Returns:
-        _type_: _description_
+    Simple one sender / one receiver game.
     """
-    sender: Sender
-    receivers: list[Receiver]
-    world: World
-    public_prior: Prior
-    seed: int
 
-    _metric_order: tuple[MetricName, ...] = field(init=False, repr=False)
-    _all_masks: tuple[frozenset[MetricName], ...] = field(init=False, repr=False)
-    _logits: np.ndarray = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if len(self.receivers) != 1:
-            raise ValueError("GameOne currently supports exactly one receiver.")
-        if not isinstance(self.public_prior, FinitePrior):
-            raise NotImplementedError("GameOne currently requires a FinitePrior.")
-        if not isinstance(self.sender.signal_policy, MaskSignalPolicy):
-            raise NotImplementedError(
-                "GameOne currently requires a MaskSignalPolicy sender."
-            )
-        if self.sender.prior != self.public_prior:
-            raise ValueError("Sender prior must match the public prior.")
-        if any(receiver.prior != self.public_prior for receiver in self.receivers):
-            raise ValueError("Receiver priors must match the public prior.")
-        if self.sender.world != self.world:
-            raise ValueError("Sender world must match the game world.")
-        if any(receiver.world != self.world for receiver in self.receivers):
-            raise ValueError("Receiver worlds must match the game world.")
-
-        self._metric_order = sorted_metrics(
-            self.sender.signal_policy.considered_metrics
-        )
-        self._all_masks = tuple(
-            frozenset(
-                metric
-                for idx, metric in enumerate(self._metric_order)
-                if bitmask & (1 << idx)
-            )
-            for bitmask in range(1 << len(self._metric_order))
-        )
-
-        probabilities = np.array(
-            [
-                self.sender.signal_policy.probability(metric)
-                for metric in self._metric_order
-            ],
-            dtype=float,
-        )
-        clipped = np.clip(probabilities, 1e-6, 1.0 - 1e-6)
-        self._logits = np.log(clipped / (1.0 - clipped))
+    _validation_name = "GameOne"
+    _exact_receivers = 1
+    _receiver_count_error = "GameOne currently supports exactly one receiver."
+    _finite_prior_error = "GameOne currently requires a FinitePrior."
+    _signal_policy_error = "GameOne currently requires a MaskSignalPolicy sender."
 
     @property
     def receiver(self) -> Receiver:
         return self.receivers[0]
 
-    @staticmethod
-    def _sigmoid(x: np.ndarray) -> np.ndarray:
-        return 1.0 / (1.0 + np.exp(-x))
-
-    def signaling_scheme(
-        self,
-        logits: np.ndarray | None = None,
-    ) -> dict[MetricName, float]:
-        logits = self._logits if logits is None else np.asarray(logits, dtype=float)
-        probabilities = self._sigmoid(logits)
-        return {
-            metric: float(probability)
-            for metric, probability in zip(self._metric_order, probabilities)
-        }
-
-    def _mask_probability(
-        self,
-        mask: frozenset[MetricName],
-        probabilities: Mapping[MetricName, float],
-    ) -> float:
-        mass = 1.0
-        for metric in self._metric_order:
-            probability = probabilities[metric]
-            mass *= probability if metric in mask else (1.0 - probability)
-        return mass
-
-    def _sender_metric(self) -> MetricName:
-        if len(self.sender.preference.elements) != 1:
-            raise ValueError("Sender preference must be degenerate.")
-        return next(iter(self.sender.preference.elements))
-
     def posterior_from_signal(self, signal: Signal) -> FinitePrior:
         if not signal.value:
-            return self.public_prior
+            return self.finite_prior
 
         posterior_support: dict[str, Scenario] = {}
         posterior_probabilities: dict[str, float] = {}
-        for scenario_name, scenario in self.public_prior.support.items():
+        for scenario_name, scenario in self.finite_prior.support.items():
             for metric, observed_value in signal.value.items():
                 realized_value = getattr(scenario, metric.value)
                 if isinstance(observed_value, Mapping):
@@ -144,14 +52,14 @@ class GameOne(ConvergenceGame):
             else:
                 posterior_support[scenario_name] = scenario
                 posterior_probabilities[scenario_name] = (
-                    self.public_prior.probabilities[scenario_name]
+                    self.finite_prior.probabilities[scenario_name]
                 )
 
         if not posterior_support:
             raise ValueError("Signal is inconsistent with the finite prior support.")
 
         return FinitePrior(
-            name=f"{self.public_prior.name}_posterior",
+            name=f"{self.finite_prior.name}_posterior",
             support=posterior_support,
             probabilities=posterior_probabilities,
         )
@@ -183,8 +91,8 @@ class GameOne(ConvergenceGame):
         probabilities: Mapping[MetricName, float],
     ) -> tuple[dict[str, Any], ...]:
         rows: list[dict[str, Any]] = []
-        for scenario_name, scenario in self.public_prior.support.items():
-            scenario_probability = self.public_prior.probabilities[scenario_name]
+        for scenario_name, scenario in self.finite_prior.support.items():
+            scenario_probability = self.finite_prior.probabilities[scenario_name]
             for mask in self._all_masks:
                 signal = self.sender.materialize_signal(
                     mask=mask,
@@ -220,10 +128,12 @@ class GameOne(ConvergenceGame):
         for row in rows:
             joint_probability = row["scenario_probability"] * row["mask_probability"]
             signal_probabilities[row["signal_key"]] += joint_probability
-            joint_by_signal[row["signal_key"]][row["scenario_name"]] += joint_probability
+            joint_by_signal[row["signal_key"]][row["scenario_name"]] += (
+                joint_probability
+            )
 
         reconstructed_prior = {
-            scenario_name: 0.0 for scenario_name in self.public_prior.support
+            scenario_name: 0.0 for scenario_name in self.finite_prior.support
         }
         report_rows: list[dict[str, Any]] = []
         for signal_key in sorted(signal_probabilities, key=format_signal_key):
@@ -235,7 +145,7 @@ class GameOne(ConvergenceGame):
                     joint_by_signal[signal_key].get(scenario_name, 0.0)
                     / signal_probability
                 )
-                for scenario_name in self.public_prior.support
+                for scenario_name in self.finite_prior.support
             }
             for scenario_name, posterior_probability in posterior_probabilities.items():
                 reconstructed_prior[scenario_name] += (
@@ -252,9 +162,9 @@ class GameOne(ConvergenceGame):
         max_error = max(
             abs(
                 reconstructed_prior[scenario_name]
-                - self.public_prior.probabilities[scenario_name]
+                - self.finite_prior.probabilities[scenario_name]
             )
-            for scenario_name in self.public_prior.support
+            for scenario_name in self.finite_prior.support
         )
         return {
             "rows": tuple(report_rows),
@@ -289,10 +199,10 @@ class GameOne(ConvergenceGame):
             posterior_changed = any(
                 abs(
                     posterior.probabilities.get(scenario_name, 0.0)
-                    - self.public_prior.probabilities[scenario_name]
+                    - self.finite_prior.probabilities[scenario_name]
                 )
                 > 1e-12
-                for scenario_name in self.public_prior.support
+                for scenario_name in self.finite_prior.support
             )
             verification_rows.append(
                 {
@@ -328,7 +238,7 @@ class GameOne(ConvergenceGame):
                 signal=row["signal"],
                 realized_scenario=row["scenario"],
             )
-            sender_metric_value = -evaluation["realized_metrics"][sender_metric]
+            sender_metric_value = evaluation["realized_metrics"][sender_metric]
             weighted_contribution = (
                 row["scenario_probability"]
                 * row["mask_probability"]
@@ -354,7 +264,7 @@ class GameOne(ConvergenceGame):
             )
 
         return {
-            "expected_sender_utility": -expected_sender_metric,
+            "expected_sender_utility": expected_sender_metric,
             "expected_sender_metric": expected_sender_metric,
             "breakdown_rows": tuple(breakdown_rows),
         }
@@ -375,24 +285,6 @@ class GameOne(ConvergenceGame):
             "mask_verification_rows": self._mask_verification_rows(rows),
         }
 
-    def _objective_from_flat_logits(self, flat_logits: np.ndarray) -> float:
-        probabilities = self.signaling_scheme(logits=flat_logits)
-        return float(self.evaluate_policy(probabilities)["expected_sender_utility"])
-
-    def _finite_difference_gradient(
-        self,
-        flat_logits: np.ndarray,
-        epsilon: float,
-    ) -> np.ndarray:
-        gradient = np.zeros_like(flat_logits)
-        for idx in range(flat_logits.size):
-            direction = np.zeros_like(flat_logits)
-            direction[idx] = epsilon
-            plus = self._objective_from_flat_logits(flat_logits + direction)
-            minus = self._objective_from_flat_logits(flat_logits - direction)
-            gradient[idx] = (plus - minus) / (2.0 * epsilon)
-        return gradient
-
     def solve(
         self,
         max_iter: int = 100,
@@ -400,69 +292,13 @@ class GameOne(ConvergenceGame):
         finite_diff_epsilon: float = 1e-2,
         convergence_tol: float = 1e-6,
         convergence_patience: int = 15,
+        progress: bool = False,
     ) -> dict[str, Any]:
-        if max_iter <= 0:
-            raise ValueError("max_iter must be positive.")
-        if step_size <= 0:
-            raise ValueError("step_size must be positive.")
-        if finite_diff_epsilon <= 0:
-            raise ValueError("finite_diff_epsilon must be positive.")
-        if convergence_patience <= 0:
-            raise ValueError("convergence_patience must be positive.")
-
-        flat_logits = self._logits.copy()
-        m = np.zeros_like(flat_logits)
-        v = np.zeros_like(flat_logits)
-        beta1 = 0.9
-        beta2 = 0.999
-        adam_eps = 1e-4
-
-        utility_history: list[float] = []
-        grad_norm_history: list[float] = []
-        policy_history: list[dict[MetricName, float]] = []
-        stagnant_steps = 0
-        converged = False
-
-        for step in range(1, max_iter + 1):
-            policy_history.append(self.signaling_scheme(logits=flat_logits))
-            utility = self._objective_from_flat_logits(flat_logits)
-            gradient = self._finite_difference_gradient(
-                flat_logits=flat_logits,
-                epsilon=finite_diff_epsilon,
-            )
-            gradient = -gradient if self.sender.objective == Objective.MINIMIZE else gradient
-            grad_norm = float(np.linalg.norm(gradient))
-
-            m = beta1 * m + (1.0 - beta1) * gradient
-            v = beta2 * v + (1.0 - beta2) * (gradient * gradient)
-            m_hat = m / (1.0 - beta1**step)
-            v_hat = v / (1.0 - beta2**step)
-            flat_logits = flat_logits + step_size * m_hat / (np.sqrt(v_hat) + adam_eps)
-
-            utility_history.append(float(utility))
-            grad_norm_history.append(grad_norm)
-
-            if len(utility_history) >= 2:
-                utility_delta = abs(utility_history[-1] - utility_history[-2])
-                if utility_delta < convergence_tol:
-                    stagnant_steps += 1
-                else:
-                    stagnant_steps = 0
-
-            if stagnant_steps >= convergence_patience:
-                converged = True
-                break
-
-        self._logits = flat_logits
-        final_probabilities = self.signaling_scheme()
-        self.sender.signal_policy.update_probabilities(final_probabilities)
-        evaluation = self.evaluate_policy(final_probabilities)
-        return {
-            "iterations": len(utility_history),
-            "converged": converged,
-            "utility_history": utility_history,
-            "grad_norm_history": grad_norm_history,
-            "policy_history": policy_history + [final_probabilities],
-            "final_probabilities": final_probabilities,
-            **evaluation,
-        }
+        return self._solve_with_finite_difference_adam(
+            max_iter=max_iter,
+            step_size=step_size,
+            finite_diff_epsilon=finite_diff_epsilon,
+            convergence_tol=convergence_tol,
+            convergence_patience=convergence_patience,
+            progress=progress
+        )
