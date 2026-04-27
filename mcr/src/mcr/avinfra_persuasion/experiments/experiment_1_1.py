@@ -30,7 +30,7 @@ from .helpers import (
     format_posterior,
 )
 
-from .plotting import plot_policy_learning
+from .plotting import plot_policy_gradient_field, plot_policy_learning
 from matplotlib import pyplot as plt
 
 from .games.game_one import GameOne
@@ -271,5 +271,13 @@ if __name__ == "__main__":
 
     print("Final expected sender metric:", f"{result['expected_sender_metric']:.4f}")
 
-    plot_policy_learning(MetricName.COST, MetricName.TRAVEL_TIME, result)
+    _, axes = plt.subplots(1, 2, figsize=(12, 5))
+    plot_policy_learning(MetricName.COST, MetricName.TRAVEL_TIME, result, ax=axes[0])
+    plot_policy_gradient_field(
+        MetricName.COST,
+        MetricName.TRAVEL_TIME,
+        game,
+        result=result,
+        ax=axes[1],
+    )
     plt.show()

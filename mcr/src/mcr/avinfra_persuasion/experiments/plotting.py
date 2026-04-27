@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 
 from ..datastructures import MetricName
+from ..bp.senders import Objective
 from .helpers import format_mask
 
 
@@ -28,13 +29,150 @@ def plot_policy_learning(
     if metric_x == metric_y:
         raise ValueError("metric_x and metric_y must be different.")
 
+    points = _policy_points(metric_x, metric_y, result)
+
+    ax = ax or plt.subplots(figsize=(6, 6))[1]
+    _draw_policy_trajectory(ax=ax, points=points)
+
+    _format_policy_axes(ax, metric_x, metric_y, title="Policy learning")
+    ax.legend(loc="best", frameon=False)
+    return ax
+
+
+def plot_policy_gradient_field(
+    metric_x: MetricName | str,
+    metric_y: MetricName | str,
+    game: object,
+    result: Mapping[str, object] | None = None,
+    ax: Axes | None = None,
+    *,
+    grid_size: int = 21,
+    finite_diff_epsilon: float = 1e-4,
+    boundary_epsilon: float = 1e-3,
+    normalize: bool = True,
+    show_colorbar: bool = True,
+) -> Axes:
+    """
+    Plot the local policy-gradient field over the Bernoulli policy square.
+
+    The field is evaluated on probability coordinates, but the direction uses
+    the same finite-difference logit gradient and sender objective convention
+    as the solver. If ``result`` is supplied, its realized policy trajectory is
+    overlaid.
+    """
+    metric_x = MetricName.coerce(metric_x)
+    metric_y = MetricName.coerce(metric_y)
+    if metric_x == metric_y:
+        raise ValueError("metric_x and metric_y must be different.")
+    if grid_size < 2:
+        raise ValueError("grid_size must be at least 2.")
+    if not 0.0 < boundary_epsilon < 0.5:
+        raise ValueError("boundary_epsilon must lie in (0, 0.5).")
+
+    metric_order = tuple(getattr(game, "_metric_order", ()))
+    if metric_x not in metric_order or metric_y not in metric_order:
+        raise ValueError("Both metrics must be present in the game's metric order.")
+    if not hasattr(game, "_finite_difference_gradient"):
+        raise ValueError("game must provide _finite_difference_gradient().")
+    if not hasattr(game, "signaling_scheme"):
+        raise ValueError("game must provide signaling_scheme().")
+
+    base_policy = game.signaling_scheme()
+    base_probabilities = {
+        metric: float(_policy_probability(base_policy, metric))
+        for metric in metric_order
+    }
+    x_index = metric_order.index(metric_x)
+    y_index = metric_order.index(metric_y)
+
+    grid = np.linspace(boundary_epsilon, 1.0 - boundary_epsilon, grid_size)
+    x_values, y_values = np.meshgrid(grid, grid)
+    x_force = np.zeros_like(x_values, dtype=float)
+    y_force = np.zeros_like(y_values, dtype=float)
+
+    for row_idx in range(grid_size):
+        for col_idx in range(grid_size):
+            probabilities = dict(base_probabilities)
+            probabilities[metric_x] = float(x_values[row_idx, col_idx])
+            probabilities[metric_y] = float(y_values[row_idx, col_idx])
+            logits = _logits_from_probabilities(metric_order, probabilities)
+            gradient = game._finite_difference_gradient(
+                flat_logits=logits,
+                epsilon=finite_diff_epsilon,
+            )
+            if game.sender.objective == Objective.MINIMIZE:
+                gradient = -gradient
+
+            x_probability = probabilities[metric_x]
+            y_probability = probabilities[metric_y]
+            x_force[row_idx, col_idx] = (
+                x_probability * (1.0 - x_probability) * gradient[x_index]
+            )
+            y_force[row_idx, col_idx] = (
+                y_probability * (1.0 - y_probability) * gradient[y_index]
+            )
+
+    speed = np.hypot(x_force, y_force)
+    arrow_length = 0.85 / max(grid_size - 1, 1)
+    if normalize:
+        x_plot = np.divide(
+            x_force,
+            speed,
+            out=np.zeros_like(x_force),
+            where=speed > 0.0,
+        ) * arrow_length
+        y_plot = np.divide(
+            y_force,
+            speed,
+            out=np.zeros_like(y_force),
+            where=speed > 0.0,
+        ) * arrow_length
+    else:
+        max_speed = float(np.max(speed))
+        scale = arrow_length / max_speed if max_speed > 0.0 else 0.0
+        x_plot = x_force * scale
+        y_plot = y_force * scale
+
+    ax = ax or plt.subplots(figsize=(6.6, 6))[1]
+    quiver = ax.quiver(
+        x_values,
+        y_values,
+        x_plot,
+        y_plot,
+        speed,
+        angles="xy",
+        scale_units="xy",
+        scale=1,
+        cmap="viridis",
+        width=0.0035,
+        alpha=0.82,
+        zorder=1,
+    )
+    if show_colorbar:
+        colorbar = ax.figure.colorbar(quiver, ax=ax, fraction=0.046, pad=0.04)
+        colorbar.set_label("Policy-space update norm")
+
+    if result is not None:
+        points = _policy_points(metric_x, metric_y, result)
+        _draw_policy_trajectory(ax=ax, points=points)
+        ax.legend(loc="best", frameon=False)
+
+    _format_policy_axes(ax, metric_x, metric_y, title="Policy gradient field")
+    return ax
+
+
+def _policy_points(
+    metric_x: MetricName,
+    metric_y: MetricName,
+    result: Mapping[str, object],
+) -> np.ndarray:
     policy_history = result.get("policy_history")
     if not isinstance(policy_history, Sequence) or not policy_history:
         raise ValueError(
             "result must contain a non-empty 'policy_history' sequence."
         )
 
-    points = np.asarray(
+    return np.asarray(
         [
             [
                 float(_policy_probability(policy, metric_x)),
@@ -45,7 +183,12 @@ def plot_policy_learning(
         dtype=float,
     )
 
-    ax = ax or plt.subplots(figsize=(6, 6))[1]
+
+def _draw_policy_trajectory(
+    *,
+    ax: Axes,
+    points: np.ndarray,
+) -> None:
     colors = np.linspace(0.2, 0.95, len(points))
 
     if len(points) > 1:
@@ -114,15 +257,33 @@ def plot_policy_learning(
                 fontsize=8,
             )
 
+
+def _format_policy_axes(
+    ax: Axes,
+    metric_x: MetricName,
+    metric_y: MetricName,
+    *,
+    title: str,
+) -> None:
     ax.set_xlim(-0.02, 1.02)
     ax.set_ylim(-0.02, 1.02)
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(f"P(reveal {metric_x.value})")
     ax.set_ylabel(f"P(reveal {metric_y.value})")
-    ax.set_title("Policy learning")
+    ax.set_title(title)
     ax.grid(True, linewidth=0.5, alpha=0.35)
-    ax.legend(loc="best", frameon=False)
-    return ax
+
+
+def _logits_from_probabilities(
+    metric_order: Sequence[MetricName],
+    probabilities: Mapping[MetricName, float],
+) -> np.ndarray:
+    probability_values = np.asarray(
+        [probabilities[metric] for metric in metric_order],
+        dtype=float,
+    )
+    clipped = np.clip(probability_values, 1e-9, 1.0 - 1e-9)
+    return np.log(clipped / (1.0 - clipped))
 
 
 def _policy_probability(
