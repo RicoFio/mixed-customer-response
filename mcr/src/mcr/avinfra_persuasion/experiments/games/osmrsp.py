@@ -8,11 +8,17 @@ import numpy as np
 
 from ...datastructures import MetricName
 from ..helpers import sorted_metrics
-from .base import FiniteDifferenceAdamMixin, StateDependentMaskGameBase, EnumerationMixin
+from .base import (
+    FiniteDifferenceAdamMixin,
+    StateDependentMaskGameBase,
+    EnumerationMixin,
+)
 
 
 @dataclass
-class OSMRSPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, EnumerationMixin):
+class OSMRSPGame(
+    FiniteDifferenceAdamMixin, StateDependentMaskGameBase, EnumerationMixin
+):
     """
     - OS: One scalar Sender
     - MR: Multiple Receivers with multi-measure preferences
@@ -20,6 +26,7 @@ class OSMRSPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, Enumerat
     - Single public signal
     - Finite public prior
     """
+
     _validation_name = "OSMRGame"
     _receiver_count_error = "OSMRGame requires at least one receiver."
     _finite_prior_error = "OSMRGame currently requires a FinitePrior."
@@ -29,7 +36,8 @@ class OSMRSPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, Enumerat
 
     def evaluate_policy(
         self,
-        probabilities: Mapping[str, Mapping[frozenset[MetricName], float]] | None = None,
+        probabilities: Mapping[str, Mapping[frozenset[MetricName], float]]
+        | None = None,
     ) -> dict[str, Any]:
         if probabilities is None:
             probabilities = self.signaling_scheme()
@@ -88,6 +96,7 @@ class OSMRSPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, Enumerat
         finite_diff_epsilon: float = 1e-4,
         convergence_tol: float = 1e-8,
         convergence_patience: int = 15,
+        deterministic_polish: bool = False,
     ) -> dict[str, Any]:
         return self._solve_with_finite_difference_adam(
             max_iter=max_iter,
@@ -96,6 +105,7 @@ class OSMRSPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, Enumerat
             convergence_tol=convergence_tol,
             convergence_patience=convergence_patience,
             progress=True,
+            deterministic_polish=deterministic_polish,
         )
 
     def solve_exact(self) -> dict[str, Any]:
