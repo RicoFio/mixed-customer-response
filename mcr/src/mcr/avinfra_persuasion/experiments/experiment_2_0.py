@@ -24,8 +24,8 @@ from ..datastructures import (
 )
 from ..networks.toy_3 import create_sample_graph
 from .helpers import format_mask
-from .plotting import plot_policy_learning
-from .games.game_two import GameTwo
+from .plotting import plot_policy_gradient_field, plot_policy_learning
+from .games.osmr import OSMRGame
 
 from matplotlib import pyplot as plt
 
@@ -125,8 +125,8 @@ def build_informative_game_two(
     seed: int = 1,
     n_humans: int = 10,
     n_avs: int = 10,
-) -> GameTwo:
-    network = create_sample_graph()
+) -> OSMRGame:
+    network = create_sample_graph("tl")
     origin: Node = (0, 0)
     target: Node = (1, 1)
     individuals = frozenset(
@@ -147,6 +147,8 @@ def build_informative_game_two(
             (MetricName.EMISSIONS, MetricName.TRAVEL_TIME),
         },
     )
+    # human_preference.draw_hasse_diagram(ax=ax)
+    # plt.show()
     av_preference = Preference(
         elements={
             MetricName.TRAVEL_TIME,
@@ -186,7 +188,7 @@ def build_informative_game_two(
     receivers = [
         PriorRouteChoiceReceiver(
             individual=individual,
-            rtype="human" if individual.id.startswith("h") else "av",
+            rtype="human" if individual.id.startswith("h") else "av" + str(individual.demand),
             preference=human_preference
             if individual.id.startswith("h")
             else av_preference,
@@ -197,7 +199,7 @@ def build_informative_game_two(
         )
         for individual in sorted(individuals, key=lambda individual: individual.id)
     ]
-    return GameTwo(
+    return OSMRGame(
         sender=sender,
         receivers=receivers,
         world=world,
@@ -208,7 +210,7 @@ def build_informative_game_two(
 
 if __name__ == "__main__":
     game = build_informative_game_two(seed=1, n_humans=5, n_avs=5)
-    result = game.solve(max_iter=30)
+    result = game.solve(max_iter=200)
 
     print("Converged:", result["converged"])
     print("Iterations:", result["iterations"])
@@ -230,5 +232,13 @@ if __name__ == "__main__":
 
     print("Final expected sender utility:", f"{result['expected_sender_utility']:.4f}")
 
-    plot_policy_learning(MetricName.HAZARD, MetricName.TRAVEL_TIME, result)
+    _, axes = plt.subplots(1, 2, figsize=(12, 5))
+    plot_policy_learning(MetricName.HAZARD, MetricName.TRAVEL_TIME, result, ax=axes[0])
+    plot_policy_gradient_field(
+        MetricName.HAZARD,
+        MetricName.TRAVEL_TIME,
+        game,
+        result=result,
+        ax=axes[1],
+    )
     plt.show()
