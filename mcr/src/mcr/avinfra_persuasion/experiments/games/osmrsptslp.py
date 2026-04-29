@@ -16,6 +16,7 @@ from ..helpers import sorted_metrics
 from .base import FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase, EnumerationMixin
 
 MaskCountProfile = tuple[int, ...]
+ResponseCacheKey = tuple[str, str, frozenset[MetricName]]
 
 
 @dataclass
@@ -161,6 +162,57 @@ class OSMRSPTSLPGame(FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase,
             if count
         }
 
+    def _cached_path_choice(
+        self,
+        *,
+        cache: dict[ResponseCacheKey, Any],
+        scenario_name: str,
+        scenario: Scenario,
+        type_name: str,
+        mask: frozenset[MetricName],
+        receivers_by_type: Mapping[str, tuple[Receiver, ...]],
+    ) -> Any:
+        key = (scenario_name, type_name, mask)
+        if key not in cache:
+            signal = self.sender.materialize_signal(
+                mask=mask,
+                realized_scenario=scenario,
+            )
+            receiver = receivers_by_type[type_name][0]
+            updated_receiver = self._receiver_after_signal(receiver, signal)
+            cache[key] = updated_receiver.get_path_choice()
+        return cache[key]
+
+    def _evaluate_lottery_path_choices(
+        self,
+        path_choices: Mapping[Any, Any],
+        believed_scenario: Scenario,
+    ) -> dict[str, Any]:
+        realized_scenario = self.world.get_realized_metrics(
+            path_choices=path_choices,
+            name=f"realized_{believed_scenario.name}",
+            base_scenario=believed_scenario,
+        )
+        sender_metric = self._sender_metric()
+        receiver_metrics = {
+            receiver.id: receiver._path_metric_totals(
+                scenario=realized_scenario,
+                path=path_choices[receiver.individual].path,
+            )
+            for receiver in self.receivers
+        }
+        sender_metric_value = sum(
+            metrics[sender_metric] for metrics in receiver_metrics.values()
+        )
+
+        return {
+            "realized_scenario": realized_scenario,
+            "path_choices": path_choices,
+            "receiver_metrics": receiver_metrics,
+            "sender_metric_value": sender_metric_value,
+            "path_counts": Counter(choice.path for choice in path_choices.values()),
+        }
+
     def evaluate_policy(
         self,
         probabilities: (
@@ -178,6 +230,7 @@ class OSMRSPTSLPGame(FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase,
             type_name: self._mask_count_profiles(len(receivers))
             for type_name, receivers in receivers_by_type.items()
         }
+        response_cache: dict[ResponseCacheKey, Any] = {}
 
         with self._temporary_state_distributions(probabilities):
             for scenario_name, scenario in self.finite_prior.support.items():
@@ -206,20 +259,28 @@ class OSMRSPTSLPGame(FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase,
                     if np.isclose(mask_probability, 0.0):
                         continue
 
-                    masks_by_receiver_id = self._assign_count_profiles_to_receivers(
-                        count_profiles_by_type,
-                        receivers_by_type,
-                    )
-                    signals_by_receiver_id = {
-                        receiver.id: self.sender.materialize_signal(
-                            mask=mask,
-                            realized_scenario=scenario,
-                        )
-                        for receiver in self.receivers
-                        for mask in (masks_by_receiver_id[receiver.id],)
-                    }
-                    evaluation = self._evaluate_lottery_signals(
-                        signals_by_receiver_id,
+                    path_choices = {}
+                    for type_name, count_profile in count_profiles_by_type.items():
+                        receivers = receivers_by_type[type_name]
+                        receiver_idx = 0
+                        for mask, count in zip(self._all_masks, count_profile):
+                            if count == 0:
+                                continue
+                            choice = self._cached_path_choice(
+                                cache=response_cache,
+                                scenario_name=scenario_name,
+                                scenario=scenario,
+                                type_name=type_name,
+                                mask=mask,
+                                receivers_by_type=receivers_by_type,
+                            )
+                            for receiver in receivers[
+                                receiver_idx : receiver_idx + count
+                            ]:
+                                path_choices[receiver.individual] = choice
+                            receiver_idx += count
+                    evaluation = self._evaluate_lottery_path_choices(
+                        path_choices,
                         scenario,
                     )
                     weighted_contribution = (
