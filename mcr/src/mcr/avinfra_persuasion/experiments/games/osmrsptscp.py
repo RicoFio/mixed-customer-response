@@ -2,38 +2,34 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from itertools import product
 from typing import Any
 
 import numpy as np
 
 from ...datastructures import MetricName
 from ..helpers import sorted_metrics
-from .base import FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase, EnumerationMixin
+from .base import FiniteDifferenceAdamMixin, StateDependentMaskGameBase, EnumerationMixin
 
 
 @dataclass
-class OSMRSPTSGame(FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase, EnumerationMixin):
+class OSMRSPTSCPGame(FiniteDifferenceAdamMixin, StateDependentMaskGameBase, EnumerationMixin):
     """
     - OS: One scalar Sender
     - MR: Multiple Receivers with multi-measure preferences
     - SP: State-dependent policy
     - TS: Type-private (randomized) signal
-    - Finite public prior
+    - Continuous public prior
     """
-    _validation_name = "OSMRSPTSGame"
-    _receiver_count_error = "OSMRSPTSGame requires at least one receiver."
-    _finite_prior_error = "OSMRSPTSGame currently requires a FinitePrior."
+    _validation_name = "OSMRSPTSCPGame"
+    _receiver_count_error = "OSMRSPTSCPGame requires at least one receiver."
+    _finite_prior_error = "OSMRSPTSCPGame currently requires a FinitePrior."
     _signal_policy_error = (
-        "OSMRSPTSGame currently requires a TypedStateDependentMaskSignalPolicy sender."
+        "OSMRSPTSCPGame currently requires a StateDependentMaskSignalPolicy sender."
     )
 
     def evaluate_policy(
         self,
-        probabilities: (
-            Mapping[str, Mapping[str, Mapping[frozenset[MetricName], float]]]
-            | None
-        ) = None,
+        probabilities: Mapping[str, Mapping[frozenset[MetricName], float]] | None = None,
     ) -> dict[str, Any]:
         if probabilities is None:
             probabilities = self.signaling_scheme()
@@ -44,33 +40,20 @@ class OSMRSPTSGame(FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase, E
         with self._temporary_state_distributions(probabilities):
             for scenario_name, scenario in self.finite_prior.support.items():
                 scenario_probability = self.finite_prior.probabilities[scenario_name]
-                for mask_profile in product(
-                    self._all_masks,
-                    repeat=len(self._type_order),
-                ):
-                    masks_by_type = dict(zip(self._type_order, mask_profile))
-                    mask_probability = 1.0
-                    for type_name, mask in masks_by_type.items():
-                        mask_probability *= self._mask_probability(
-                            scenario_name,
-                            type_name,
-                            mask,
-                            probabilities,
-                        )
+                for mask in self._all_masks:
+                    mask_probability = self._mask_probability(
+                        scenario_name,
+                        mask,
+                        probabilities,
+                    )
                     if np.isclose(mask_probability, 0.0):
                         continue
 
-                    signals_by_type = {
-                        type_name: self.sender.materialize_signal(
-                            mask=mask,
-                            realized_scenario=scenario,
-                        )
-                        for type_name, mask in masks_by_type.items()
-                    }
-                    evaluation = self._evaluate_typed_signals(
-                        signals_by_type,
-                        scenario,
+                    signal = self.sender.materialize_signal(
+                        mask=mask,
+                        realized_scenario=scenario,
                     )
+                    evaluation = self._evaluate_signal(signal, scenario)
                     weighted_contribution = (
                         scenario_probability
                         * mask_probability
@@ -81,10 +64,7 @@ class OSMRSPTSGame(FiniteDifferenceAdamMixin, TypedStateDependentMaskGameBase, E
                         {
                             "scenario_name": scenario_name,
                             "scenario_probability": scenario_probability,
-                            "masks_by_type": {
-                                type_name: sorted_metrics(mask)
-                                for type_name, mask in masks_by_type.items()
-                            },
+                            "mask": sorted_metrics(mask),
                             "mask_probability": mask_probability,
                             "sender_metric_value": evaluation["sender_metric_value"],
                             "weighted_contribution": weighted_contribution,

@@ -96,7 +96,6 @@ class OSMRSPGame(
         finite_diff_epsilon: float = 1e-4,
         convergence_tol: float = 1e-8,
         convergence_patience: int = 15,
-        deterministic_polish: bool = False,
     ) -> dict[str, Any]:
         return self._solve_with_finite_difference_adam(
             max_iter=max_iter,
@@ -105,7 +104,6 @@ class OSMRSPGame(
             convergence_tol=convergence_tol,
             convergence_patience=convergence_patience,
             progress=True,
-            deterministic_polish=deterministic_polish,
         )
 
     def solve_exact(self) -> dict[str, Any]:

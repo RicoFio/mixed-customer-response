@@ -97,7 +97,11 @@ class Receiver:
                     else 0.0
                 )
             else:
-                likelihood = self.sender.signal_likelihood(signal, scenario)
+                likelihood = self.sender.signal_likelihood(
+                    signal,
+                    scenario,
+                    receiver_type=self.rtype,
+                )
 
             if likelihood > 0.0:
                 posterior_probability = (
@@ -338,5 +342,83 @@ class PriorRouteChoiceReceiver(Receiver):
 
         return totals
 
+# TODO this is probably something for the future
+# @dataclass
+# class ExperiencedRouteChoiceReceiver(PriorRouteChoiceReceiver):
+#     private_ewma_alpha: float = 0.3
+#     private_belief_weight: float = 0.5
 
-RouteChoiceReceiver = PriorRouteChoiceReceiver
+#     _private_route_beliefs: dict[tuple[Arc, ...], dict[MetricName, float]] = field(
+#         init=False,
+#         default_factory=dict,
+#         repr=False,
+#         compare=False,
+#     )
+
+#     def __post_init__(self) -> None:
+#         super().__post_init__()
+#         if not 0.0 <= self.private_ewma_alpha <= 1.0:
+#             raise ValueError("private_ewma_alpha must lie in [0, 1].")
+#         if not 0.0 <= self.private_belief_weight <= 1.0:
+#             raise ValueError("private_belief_weight must lie in [0, 1].")
+
+#     @property
+#     def private_route_beliefs(self) -> Mapping[tuple[Arc, ...], Mapping[MetricName, float]]:
+#         return {
+#             path: dict(metric_totals)
+#             for path, metric_totals in self._private_route_beliefs.items()
+#         }
+
+#     def reset_public_belief(self) -> None:
+#         self.belief = self.prior
+#         self._action_history.clear()
+#         self._realized_payoff_history.clear()
+
+#     def reset_for_rollout(self) -> None:
+#         self.reset_public_belief()
+#         self._private_route_beliefs.clear()
+
+#     def _expected_objective_values_for_path(
+#         self,
+#         path: tuple[Arc, ...],
+#     ) -> Mapping[MetricName, float]:
+#         public_estimate = super()._expected_objective_values_for_path(path)
+#         private_estimate = self._private_route_beliefs.get(path)
+#         if private_estimate is None:
+#             return public_estimate
+
+#         blended = dict(public_estimate)
+#         for metric, public_value in public_estimate.items():
+#             if metric == MetricName.LEFT_TURNS or metric not in private_estimate:
+#                 continue
+#             blended[metric] = (
+#                 (1.0 - self.private_belief_weight) * public_value
+#                 + self.private_belief_weight * private_estimate[metric]
+#             )
+#         return blended
+
+#     def update_private_route_belief(
+#         self,
+#         realized_metrics: Mapping[MetricName, float],
+#     ) -> None:
+#         if not self._action_history:
+#             raise ValueError("Receiver has no chosen route to update.")
+
+#         chosen_path = self._action_history[-1].path
+#         observed_metrics = {
+#             metric: float(value)
+#             for metric, value in realized_metrics.items()
+#             if metric != MetricName.LEFT_TURNS
+#         }
+#         current_estimate = self._private_route_beliefs.get(chosen_path)
+#         if current_estimate is None:
+#             self._private_route_beliefs[chosen_path] = observed_metrics
+#             return
+
+#         updated_estimate = dict(current_estimate)
+#         for metric, realized_value in observed_metrics.items():
+#             updated_estimate[metric] = (
+#                 (1.0 - self.private_ewma_alpha) * current_estimate[metric]
+#                 + self.private_ewma_alpha * realized_value
+#             )
+#         self._private_route_beliefs[chosen_path] = updated_estimate

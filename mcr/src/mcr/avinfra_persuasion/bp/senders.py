@@ -15,6 +15,7 @@ from .signals import (
     Signal,
     SignalPolicy,
     StateDependentMaskSignalPolicy,
+    TypedStateDependentMaskSignalPolicy,
 )
 
 
@@ -47,10 +48,13 @@ class Sender:
         self,
         realized_scenario: Scenario,
         rng: np.random.Generator | None = None,
+        *,
+        receiver_type: str | None = None,
     ) -> Signal:
         sampled_signal = self.signal_policy.sample(
             realized_scenario=realized_scenario,
             rng=rng,
+            receiver_type=receiver_type,
         )
         if isinstance(sampled_signal, MaskSignal):
             return self.materialize_signal(
@@ -113,6 +117,8 @@ class Sender:
         self,
         signal: Signal,
         scenario: Scenario,
+        *,
+        receiver_type: str | None = None,
     ) -> float:
         truthful_signal = self.materialize_signal(
             mask=signal.metrics,
@@ -128,6 +134,17 @@ class Sender:
             return self.signal_policy.mask_probability(signal.metrics)
         if isinstance(self.signal_policy, StateDependentMaskSignalPolicy):
             return self.signal_policy.mask_probability(scenario.name, signal.metrics)
+        if isinstance(self.signal_policy, TypedStateDependentMaskSignalPolicy):
+            if receiver_type is None:
+                raise ValueError(
+                    "TypedStateDependentMaskSignalPolicy requires a receiver type "
+                    "to compute signal likelihood."
+                )
+            return self.signal_policy.mask_probability(
+                scenario.name,
+                receiver_type,
+                signal.metrics,
+            )
         raise NotImplementedError(
             f"Unsupported signal policy: {type(self.signal_policy).__name__!r}."
         )
