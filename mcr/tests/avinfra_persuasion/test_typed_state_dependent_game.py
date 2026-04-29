@@ -126,7 +126,7 @@ def test_typed_state_dependent_game_weights_independent_type_mask_profile(
     assert {"human": travel_time_mask, "av": hazard_mask} in recorded_profiles
 
 
-def test_typed_state_dependent_lottery_game_draws_per_receiver_masks(
+def test_typed_state_dependent_lottery_game_compresses_same_type_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     arc = ("s", "t")
@@ -200,40 +200,25 @@ def test_typed_state_dependent_lottery_game_draws_per_receiver_masks(
             },
         },
     }
-    recorded_profiles: list[dict[str, frozenset[MetricName]]] = []
+    response_calls: list[frozenset[MetricName]] = []
+    original_receiver_after_signal = game._receiver_after_signal
 
-    def fake_evaluate_lottery_signals(signals_by_receiver_id, believed_scenario):
-        profile = {
-            receiver_id: signal.metrics
-            for receiver_id, signal in signals_by_receiver_id.items()
-        }
-        recorded_profiles.append(profile)
-        profile_masks = tuple(profile.values())
-        one_receiver_gets_travel_time = (
-            profile_masks.count(travel_time_mask) == 1
-            and profile_masks.count(empty_mask) == 1
-        )
-        sender_metric_value = 10.0 if one_receiver_gets_travel_time else 0.0
-        return {
-            "realized_scenario": believed_scenario,
-            "path_counts": {},
-            "sender_metric_value": sender_metric_value,
-        }
+    def counting_receiver_after_signal(receiver, signal):
+        response_calls.append(signal.metrics)
+        return original_receiver_after_signal(receiver, signal)
 
-    monkeypatch.setattr(
-        game,
-        "_evaluate_lottery_signals",
-        fake_evaluate_lottery_signals,
-    )
+    monkeypatch.setattr(game, "_receiver_after_signal", counting_receiver_after_signal)
 
     evaluation = game.evaluate_policy(probabilities)
 
-    assert evaluation["expected_sender_metric"] == pytest.approx(5.0)
+    assert len(evaluation["breakdown_rows"]) == 3
+    assert response_calls == [travel_time_mask, empty_mask]
     assert {
-        "human_0": travel_time_mask,
-        "human_1": empty_mask,
-    } in recorded_profiles
-    assert {
-        "human_0": empty_mask,
-        "human_1": travel_time_mask,
-    } in recorded_profiles
+        "human": {
+            tuple(): 1,
+            (MetricName.TRAVEL_TIME,): 1,
+        }
+    } in [
+        row["mask_counts_by_type"]
+        for row in evaluation["breakdown_rows"]
+    ]

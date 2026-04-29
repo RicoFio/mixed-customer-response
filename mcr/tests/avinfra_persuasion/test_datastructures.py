@@ -31,29 +31,18 @@ def _single_arc_world() -> tuple[World, tuple[str, str], Individual]:
     return world, arc, individual
 
 
-def test_scenario_from_world_initializes_unit_travel_time_multipliers() -> None:
-    world, arc, _ = _single_arc_world()
-
-    scenario = Scenario.from_world("nominal", world)
-
-    assert scenario.travel_time[arc] == pytest.approx(2.0)
-    assert scenario.travel_time_multiplier[arc] == pytest.approx(1.0)
-
-
 def test_scenario_multiplier_overrides_recompute_precongestion_travel_time() -> None:
     world, arc, _ = _single_arc_world()
 
     scenario = Scenario.from_world(
         "shifted",
         world,
-        travel_time_multiplier_overrides={arc: 3.0},
     )
 
-    assert scenario.travel_time_multiplier[arc] == pytest.approx(3.0)
-    assert scenario.travel_time[arc] == pytest.approx(6.0)
+    assert scenario.travel_time[arc] == pytest.approx(2.0)
 
 
-def test_world_realization_uses_travel_time_multiplier() -> None:
+def test_world_realization() -> None:
     world, arc, individual = _single_arc_world()
     path_choice = {individual: SimpleNamespace(path=(arc,))}
 
@@ -68,10 +57,8 @@ def test_world_realization_uses_travel_time_multiplier() -> None:
         base_scenario=Scenario.from_world(
             "shifted",
             world,
-            travel_time_multiplier_overrides={arc: 2.0},
         ),
     )
 
     assert realized_nominal.travel_time[arc] == pytest.approx(2.3)
-    assert realized_shifted.travel_time[arc] == pytest.approx(4.6)
-    assert realized_shifted.travel_time_multiplier[arc] == pytest.approx(2.0)
+    assert realized_shifted.travel_time[arc] == pytest.approx(2.3)

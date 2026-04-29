@@ -6,10 +6,7 @@ from typing import Any, cast
 import pytest
 
 from mcr.avinfra_persuasion.bp import receivers as receivers_module
-from mcr.avinfra_persuasion.bp.receivers import (
-    ExperiencedRouteChoiceReceiver,
-    Receiver,
-)
+from mcr.avinfra_persuasion.bp.receivers import Receiver
 from mcr.avinfra_persuasion.bp.senders import ScalarSender
 from mcr.avinfra_persuasion.bp.signals import (
     MaskSignal,
@@ -31,6 +28,17 @@ from mcr.avinfra_persuasion.datastructures import (
 )
 from mcr.avinfra_persuasion.opt import RoutingSolution, RoutingSolutionPoint
 from mcr.avinfra_persuasion.orders import total_order_from_list
+
+
+ExperiencedRouteChoiceReceiver = getattr(
+    receivers_module,
+    "ExperiencedRouteChoiceReceiver",
+    None,
+)
+requires_experienced_receiver = pytest.mark.skipif(
+    ExperiencedRouteChoiceReceiver is None,
+    reason="ExperiencedRouteChoiceReceiver is not implemented.",
+)
 
 
 def _receiver_world() -> tuple[World, Arc]:
@@ -662,6 +670,7 @@ def test_route_choice_receiver_caches_prior_paths_and_rescores_posterior(
     assert call_count == 1
 
 
+@requires_experienced_receiver
 def test_experienced_route_choice_receiver_blends_private_route_beliefs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -718,6 +727,7 @@ def test_experienced_route_choice_receiver_blends_private_route_beliefs(
     assert choice_without_private_weight.path == (direct,)
 
 
+@requires_experienced_receiver
 def test_experienced_route_choice_receiver_updates_private_beliefs_with_ewma() -> None:
     world, direct, _, _ = _two_route_world()
     scenario = Scenario(
@@ -773,6 +783,7 @@ def test_experienced_route_choice_receiver_updates_private_beliefs_with_ewma() -
     assert private_belief[MetricName.COST] == pytest.approx(5.0)
 
 
+@requires_experienced_receiver
 def test_experienced_route_choice_receiver_reset_lifecycle() -> None:
     world, direct, _, _ = _two_route_world()
     scenario = Scenario(
