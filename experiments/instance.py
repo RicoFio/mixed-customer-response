@@ -16,8 +16,8 @@ class Config:
     alpha: float = .15
     beta: float = 4
     bottleneck_capacity: float = 15
-    default_capacity: float = 4
-    accident_delay: float = 10
+    default_capacity: float = 3
+    accident_delay: float = 35
     accident_prior: float = .4
 
     demands: Mapping[Arc, int] = field(
