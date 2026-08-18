@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "bp",
+    "matplotlib>=3.11.1",
 ]
 
 [tool.uv]
