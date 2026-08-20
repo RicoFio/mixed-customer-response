@@ -98,4 +98,4 @@ class Instance:
                     tau[scenario_name, a, k] = omega.travel_time[a] * (1 + config.alpha * ((k - 1) / network.capacity[a]) ** config.beta)
 
 def edge_path(path: Sequence[Node]) -> Sequence[Arc]:
-    return list(itertools.pairwise(path))
+    return tuple(itertools.pairwise(path))
