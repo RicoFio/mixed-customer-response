@@ -32,7 +32,6 @@ class Config:
         ((1, 2), (1, 3)),
     )
 
-@dataclass
 class Instance:
     def __init__(
         self,
