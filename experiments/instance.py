@@ -3,7 +3,7 @@ from collections.abc import Sequence, Mapping
 import itertools
 import networkx as nx
 
-from bp.world import random_grid_world, World, Scenario, Arc, Node
+from bp.world import random_grid_world, Scenario, Arc, Node
 
 
 @dataclass
