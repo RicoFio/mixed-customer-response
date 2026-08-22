@@ -123,3 +123,13 @@ class Instance:
                 for k in range(world.total_population + 1):
                     tau[scenario_name, a, k] = (0 if k == 0 else
                         travel_time[a] * (1 + config.alpha * ((k - 1) / scenario_capacities[a]) ** config.beta))
+
+        # phi[omega, a, k] := potential over arc for k players under state omega
+        phi: Mapping[tuple[str, Arc, float]] = {}
+        self.phi = phi
+        for scenario_name in scenarios:
+            for arc in active_arcs:
+                potential = 0
+                for k in range(world.total_population + 1):
+                    potential += tau[scenario_name, arc, k]
+                    phi[scenario_name, arc, k] = potential
