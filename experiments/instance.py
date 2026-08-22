@@ -29,7 +29,7 @@ class Config:
     artery_mph_range: tuple[int, int] = (65, 85)
     default_capacity_range: tuple[int, int] = (3, 10)
     artery_capacity_range: tuple[int, int] = (35, 60) # google says we can be even more aggressive, relative to default_capacity_range, but is ok
-    accident_capacity_range: tuple[int, int] = (3, 10)
+    accident_capacity_range: tuple[int, int] = (2, 6)
     accident_prior: float = .4
 
     demands: Mapping[Arc, int] = field(
@@ -40,7 +40,7 @@ class Config:
     )
     arteries: Set[Arc] = field(
         default_factory=lambda: set(edge_path(
-            (1, x) for x in range(1)
+            (1, x) for x in range(0)
         ))
     )
 
@@ -71,7 +71,7 @@ class Instance:
                 edge["capacity"] = rng.uniform(*config.default_capacity_range)
 
         travel_time = network.travel_time
-        capacities = {
+        capacities = self.capacities = {
             "nominal": network.capacity,
             "accident": {
                 arc: (
