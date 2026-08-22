@@ -1,10 +1,18 @@
 from dataclasses import dataclass, field
-from collections.abc import Sequence, Mapping
+from collections.abc import Sequence, Mapping, Set
 import itertools
 import networkx as nx
+import numpy as np
 
 from bp.world import random_grid_world, Scenario, Arc, Node
 
+
+def mph_to_min(mph: float):
+    # minutes to cross a unit mile @ x mph
+    return 60 / mph
+
+def edge_path(path: Sequence[Node]) -> Sequence[Arc]:
+    return tuple(itertools.pairwise(path))
 
 @dataclass
 class Config:
@@ -15,9 +23,13 @@ class Config:
     k: int = 4
     alpha: float = .15
     beta: float = 4
-    bottleneck_capacity: float = 15
-    default_capacity: float = 3
-    accident_delay: float = 35
+
+    # drawn uniformly
+    default_mph_range: tuple[int, int] = (25, 55)
+    artery_mph_range: tuple[int, int] = (65, 85)
+    default_capacity_range: tuple[int, int] = (3, 10)
+    artery_capacity_range: tuple[int, int] = (35, 60) # google says we can be even more aggressive, relative to default_capacity_range, but is ok
+    accident_capacity_range: tuple[int, int] = (3, 10)
     accident_prior: float = .4
 
     demands: Mapping[Arc, int] = field(
@@ -26,10 +38,10 @@ class Config:
             ((2, 0), (2, 3)): 10,
         }
     )
-    bottlenecks: tuple[Arc, ...] = (
-        ((1, 0), (1, 1)),
-        ((1, 1), (1, 2)),
-        ((1, 2), (1, 3)),
+    arteries: Set[Arc] = field(
+        default_factory=lambda: set(edge_path(
+            (1, x) for x in range(1)
+        ))
     )
 
 class Instance:
@@ -37,65 +49,77 @@ class Instance:
         self,
         config: Config=Config()
     ):
+        rng = np.random.default_rng(config.seed)
         world = self.world = random_grid_world(
             rows=config.rows,
             cols=config.cols,
             demands=config.demands,
             seed=config.seed,
+            travel_time_range=tuple(mph_to_min(x) for x in reversed(config.default_mph_range)),
         )
         network = world.network
         network.bpr_alpha = config.alpha
         network.bpr_beta = config.beta
 
-        for arc in network.ordered_arcs:
-            if arc in config.bottlenecks or (arc[1], arc[0]) in config.bottlenecks:
-                network.capacity[arc] = config.bottleneck_capacity
+        edges = network.graph.edges
+        for arc in edges:
+            edge = edges[arc]
+            if arc in config.arteries:
+                edge["travel_time"] = mph_to_min(rng.uniform(*config.artery_mph_range))
+                edge["capacity"] = rng.uniform(*config.artery_capacity_range)
             else:
-                network.capacity[arc] = config.default_capacity
+                edge["capacity"] = rng.uniform(*config.default_capacity_range)
 
-        nominal = Scenario.from_world("nominal", world)
-
-        acc_travel_time = dict(nominal.travel_time)
-        for arc in config.bottlenecks:
-            acc_travel_time[arc] += config.accident_delay
-
-        accident = Scenario(
-            name="accident",
-            travel_time=acc_travel_time,
-            discomfort=nominal.discomfort,
-            hazard=nominal.hazard,
-            cost=nominal.cost,
-            emissions=nominal.emissions,
-            policing=nominal.policing
-        )
+        travel_time = network.travel_time
+        capacities = {
+            "nominal": network.capacity,
+            "accident": {
+                arc: (
+                    rng.uniform(*config.accident_capacity_range)
+                    if arc in config.arteries else
+                    capacity
+                )
+                for arc, capacity in network.capacity.items()
+            },
+        }
 
         scenarios = self.scenarios = {
-            "nominal": (nominal, 1 - config.accident_prior),
-            "accident": (accident, config.accident_prior),
+            "nominal": 1 - config.accident_prior,
+            "accident": config.accident_prior,
         }
 
         self.demands = config.demands
-        self.bottlenecks = config.bottlenecks
+        self.arteries = config.arteries
 
-        # NOTE: shortest paths calculates wrt nominal state
+        # NOTE: shortest paths calculated wrt nominal state
         paths_per_od: Mapping[Node, Sequence[Sequence[Arc]]] = {}
         self.paths_per_od = paths_per_od
         for od in config.demands.keys():
-            paths_per_od[od] = [
-                edge_path(p)
-                for p in itertools.islice(
-                    nx.shortest_simple_paths(network.graph, od[0], od[1], weight="travel_time"),
-                    config.k
-                )
-            ]
+            paths = paths_per_od[od] = []
+            shortest_paths = nx.shortest_simple_paths(network.graph, od[0], od[1], weight="travel_time")
+
+            # path cannot be composed of >75% of the same edges as an existing path in the profile
+            while len(paths) < config.k :
+                p0 = edge_path(next(shortest_paths))
+
+                edges = sum(1 for p1 in paths for edge in p1 if edge in p0)
+                if edges <= len(p0) * .75:
+                    paths.append(p0)
+
+        active_arcs = set(
+            itertools.chain.from_iterable(
+                itertools.chain.from_iterable(paths_per_od.values())
+            )
+        )
 
         # tau[omega, a, k] := average cost for k players on arc a under state omega
         tau: Mapping[tuple[str, Arc, int], float] = {}
         self.tau = tau
-        for scenario_name, (omega, _) in scenarios.items():
+        for scenario_name in scenarios:
+            scenario_capacities = capacities[scenario_name]
+
+            # for a in active_arcs:
             for a in world.ordered_arcs:
                 for k in range(world.total_population + 1):
-                    tau[scenario_name, a, k] = omega.travel_time[a] * (1 + config.alpha * ((k - 1) / network.capacity[a]) ** config.beta)
-
-def edge_path(path: Sequence[Node]) -> Sequence[Arc]:
-    return tuple(itertools.pairwise(path))
+                    tau[scenario_name, a, k] = (0 if k == 0 else
+                        travel_time[a] * (1 + config.alpha * ((k - 1) / scenario_capacities[a]) ** config.beta))
