@@ -17,7 +17,7 @@ def edge_path(path: Sequence[Node]) -> Sequence[Arc]:
 @dataclass
 class Config:
     seed: int = 0
-    rows: int = 3
+    rows: int = 5
     cols: int = 4
 
     k: int = 4
@@ -25,22 +25,22 @@ class Config:
     beta: float = 4
 
     # drawn uniformly
-    default_mph_range: tuple[int, int] = (25, 55)
+    default_mph_range: tuple[int, int] = (20, 40)
     artery_mph_range: tuple[int, int] = (65, 85)
-    default_capacity_range: tuple[int, int] = (3, 10)
+    default_capacity_range: tuple[int, int] = (3, 3)
     artery_capacity_range: tuple[int, int] = (35, 60) # google says we can be even more aggressive, relative to default_capacity_range, but is ok
-    accident_capacity_range: tuple[int, int] = (2, 6)
+    accident_capacity_range: tuple[int, int] = (3, 3)
     accident_prior: float = .4
 
     demands: Mapping[Arc, int] = field(
         default_factory=lambda: {
-            ((0, 0), (0, 3)): 10,
-            ((2, 0), (2, 3)): 10,
+            ((1, 0), (1, 3)): 10,
+            ((3, 0), (3, 3)): 10,
         }
     )
     arteries: Set[Arc] = field(
         default_factory=lambda: set(edge_path(
-            (1, x) for x in range(0)
+            (2, x) for x in range(4)
         ))
     )
 
@@ -112,6 +112,7 @@ class Instance:
             )
         )
 
+        # TODO: vvv refactor w/ numpy; comment got lost at some point oops
         # tau[omega, a, k] := average cost for k players on arc a under state omega
         tau: Mapping[tuple[str, Arc, int], float] = {}
         self.tau = tau
