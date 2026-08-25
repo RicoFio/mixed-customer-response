@@ -106,7 +106,7 @@ class Instance:
                 if edges <= len(p0) * .75:
                     paths.append(p0)
 
-        active_arcs = set(
+        active_arcs = self.active_arcs = set(
             itertools.chain.from_iterable(
                 itertools.chain.from_iterable(paths_per_od.values())
             )
@@ -119,9 +119,7 @@ class Instance:
         for scenario_name in scenarios:
             scenario_capacities = capacities[scenario_name]
 
-            # do all arcs b/c of dictator_k_inf.ipynb
-            # for a in active_arcs:
-            for a in world.ordered_arcs:
+            for a in active_arcs:
                 for k in range(world.total_population + 2): # +2, not +1, b/c of deviations
                     tau[scenario_name, a, k] = (0 if k == 0 else
                         travel_time[a] * (1 + config.alpha * ((k - 1) / scenario_capacities[a]) ** config.beta))
