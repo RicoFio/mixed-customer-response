@@ -92,10 +92,9 @@ class Instance:
         self.arteries = config.arteries
 
         # NOTE: shortest paths calculated wrt nominal state
-        paths_per_od: Mapping[Node, Sequence[Sequence[Arc]]] = {}
-        self.paths_per_od = paths_per_od
+        self.paths_per_od: Mapping[Node, Sequence[Sequence[Arc]]] = {}
         for od in config.demands.keys():
-            paths = paths_per_od[od] = []
+            paths = self.paths_per_od[od] = []
             shortest_paths = nx.shortest_simple_paths(network.graph, od[0], od[1], weight="travel_time")
 
             # path cannot be composed of >75% of the same edges as an existing path in the profile
@@ -108,28 +107,30 @@ class Instance:
 
         active_arcs = self.active_arcs = set(
             itertools.chain.from_iterable(
-                itertools.chain.from_iterable(paths_per_od.values())
+                itertools.chain.from_iterable(self.paths_per_od.values())
             )
         )
 
-        # TODO: vvv refactor w/ numpy; comment got lost at some point oops
-        # tau[omega, a, k] := average cost for k players on arc a under state omega
-        tau: Mapping[tuple[str, Arc, int], float] = {}
-        self.tau = tau
-        for scenario_name in scenarios:
-            scenario_capacities = capacities[scenario_name]
+        self.arc_to_idx = {a: i for i, a in enumerate(self.active_arcs)}
 
-            for a in active_arcs:
-                for k in range(world.total_population + 2): # +2, not +1, b/c of deviations
-                    tau[scenario_name, a, k] = (0 if k == 0 else
-                        travel_time[a] * (1 + config.alpha * ((k - 1) / scenario_capacities[a]) ** config.beta))
+        num_arcs = len(self.active_arcs)
+        max_flow = world.total_population + 1 # +1 b/c deviations
+        k_range = np.arange(1, max_flow + 1)
 
-        # phi[omega, a, k] := potential over arc for k players under state omega
-        phi: Mapping[tuple[str, Arc, float]] = {}
-        self.phi = phi
-        for scenario_name in scenarios:
-            for arc in active_arcs:
-                potential = 0
-                for k in range(world.total_population + 1):
-                    potential += tau[scenario_name, arc, k]
-                    phi[scenario_name, arc, k] = potential
+        self.tau: Mapping[str, np.ndarray] = {}
+        self.phi: Mapping[str, np.ndarray] = {}
+
+        for scenario_name, scenario_capacities in capacities.items():
+            # +1 b/c [0, max_flow]
+            tau_matrix = np.zeros((num_arcs, max_flow + 1))
+            phi_matrix = np.zeros((num_arcs, max_flow + 1))
+
+            for i, arc in enumerate(active_arcs):
+                t0 = travel_time[arc]
+                c = scenario_capacities[arc]
+                costs = t0 * (1 + config.alpha * ((k_range - 1) / c) ** config.beta)
+                tau_matrix[i, 1:] = costs
+                phi_matrix[i, 1:] = np.cumsum(costs)
+
+            self.tau[scenario_name] = tau_matrix
+            self.phi[scenario_name] = phi_matrix
