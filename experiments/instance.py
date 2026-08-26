@@ -83,7 +83,7 @@ class Instance:
             },
         }
 
-        scenarios = self.scenarios = {
+        self.scenarios = {
             "nominal": 1 - config.accident_prior,
             "accident": config.accident_prior,
         }
