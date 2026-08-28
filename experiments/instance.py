@@ -17,6 +17,7 @@ def edge_path(path: Sequence[Node]) -> Sequence[Arc]:
 @dataclass
 class Config:
     seed: int = 0
+    optimize_active_arcs: bool = True
     rows: int = 5
     cols: int = 4
 
@@ -105,11 +106,14 @@ class Instance:
                 if edges <= len(p0) * .75:
                     paths.append(p0)
 
-        active_arcs = self.active_arcs = set(
-            itertools.chain.from_iterable(
-                itertools.chain.from_iterable(self.paths_per_od.values())
+        if config.optimize_active_arcs:
+            active_arcs = self.active_arcs = set(
+                itertools.chain.from_iterable(
+                    itertools.chain.from_iterable(self.paths_per_od.values())
+                )
             )
-        )
+        else:
+            active_arcs = self.active_arcs = world.A
 
         self.arc_to_idx = {a: i for i, a in enumerate(self.active_arcs)}
 

@@ -43,6 +43,23 @@ class Model:
             for i, path in enumerate(paths)
         }
 
+        path_as_set = {
+            path: set(path)
+            for paths in paths_per_od.values()
+            for path in paths
+        }
+
+        # partition the arcs in p1 into two groups: (p1 & p0, p1 - p0)
+        partitioned_paths = self.partitioned_paths = {}
+        for od, paths in paths_per_od.items():
+            for p0_idx, p0 in enumerate(paths):
+                p0_set = path_as_set[p0]
+                for p1_idx, p1 in enumerate(paths):
+                    if p0_idx != p1_idx:
+                        shared = [arc_to_idx[a] for a in p1 if a in p0_set]
+                        dev = [arc_to_idx[a] for a in p1 if a not in p0_set]
+                        partitioned_paths[od, p0_idx, p1_idx] = (shared, dev)
+
         # m := len(profiles_per_od[?])
         # m = (n + k - 1) choose (k - 1)
         od_path_flows: Mapping[Node, np.ndarray] = {} # (m x num_arcs), possible path flows induced by od
@@ -103,23 +120,6 @@ class Model:
             for i, path in enumerate(paths)
         }
 
-        path_as_set = {
-            path: set(path)
-            for paths in paths_per_od.values()
-            for path in paths
-        }
-
-        # partition the arcs in p1 into two groups: (p1 & p0, p1 - p0)
-        partitioned_paths = self.partitioned_paths = {}
-        for od, paths in paths_per_od.items():
-            for p0_idx, p0 in enumerate(paths):
-                p0_set = path_as_set[p0]
-                for p1_idx, p1 in enumerate(paths):
-                    if p0_idx != p1_idx:
-                        shared = [arc_to_idx[a] for a in p1 if a in p0_set]
-                        dev = [arc_to_idx[a] for a in p1 if a not in p0_set]
-                        partitioned_paths[od, p0_idx, p1_idx] = (shared, dev)
-
         # decision: sigma[omega, a] := \prob[a \mid \theta]
         sigma = self.sigma = {
             scenario_name: [
@@ -161,6 +161,54 @@ class Model:
 
         self.pot_coeffs = pot_coeffs
         self.cost_coeffs = cost_coeffs
+
+        def add_ic_constraints():
+            for od, paths in paths_per_od.items():
+                od_idx = T[od]
+                expected_deviate_benefit = {
+                    (p0_idx, p1_idx): ([], [])
+                    for p0_idx in range(len(paths))
+                    for p1_idx in range(len(paths))
+                    if p0_idx != p1_idx
+                }
+
+                for scenario_name, mu in scenarios.items():
+                    sigma_vars = sigma[scenario_name]
+                    tau_matrix = tau[scenario_name]
+
+                    # (num_joint x num_arcs)
+                    # arc_cost = np.column_stack([tau_matrix[i, flow_matrix[:, i]] for i in range(num_arcs)])
+                    # arc_cost_dev = np.column_stack([tau_matrix[i, flow_matrix[:, i] + 1] for i in range(num_arcs)])
+                    arc_cost = tau_matrix[arc_indices, flow_matrix]
+                    arc_cost_dev = tau_matrix[arc_indices, flow_matrix + 1]
+
+                    for p0_idx in range(len(paths)):
+                        # (num_joint,)
+                        counts = path_flows[od, p0_idx]
+
+                        # (num_joint,)
+                        cost_follow = arc_cost[:, path_arc_indices[od, p0_idx]].sum(axis=1)
+
+                        for p1_idx in range(len(paths)):
+                            if p0_idx == p1_idx:
+                                continue
+
+                            shared_arcs, dev_arcs = partitioned_paths[od, p0_idx, p1_idx]
+                            cost_deviate = arc_cost[:, shared_arcs].sum(axis=1)
+                            cost_deviate += arc_cost_dev[:, dev_arcs].sum(axis=1)
+
+                            _coeffs = (mu * counts * (cost_follow - cost_deviate))
+
+                            coeffs, vars = expected_deviate_benefit[p0_idx, p1_idx]
+                            coeffs.extend(_coeffs.ravel())
+                            vars.extend(sigma_vars)
+
+                # for (p0_idx, p1_idx), (coeffs, vars) in expected_deviate_benefit.items():
+                #     model.addConstr(
+                #         gp.LinExpr(coeffs, vars) <= 0,
+                #         name=f"obed_{od}_{p0_idx}_to_{p1_idx}"
+                #     )
+        self.add_ic_constraints = add_ic_constraints
 
     def gen_expected_potential(self):
         return gp.LinExpr(self.pot_coeffs, self.all_sigma_vars)
