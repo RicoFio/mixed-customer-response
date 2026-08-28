@@ -24,6 +24,7 @@ class Model:
         phi = instance.phi
 
         num_arcs = len(active_arcs)
+        num_scenarios = len(scenarios)
         arc_indices = self.arc_indices = np.arange(num_arcs)
 
         T = self.T = {od: i for i, od in enumerate(demands.keys())}
@@ -107,7 +108,7 @@ class Model:
             for combo in itertools.product(
                 *(od_arc_flows[od] for od in od_list)
             )
-        ], dtype=int)
+        ], dtype=int) # becomes a float otherwise bc of itertools
 
         # TODO: can be similarly optimized to above
         # (num_joint,)
@@ -121,67 +122,49 @@ class Model:
         }
 
         # decision: sigma[omega, a] := \prob[a \mid \theta]
-        sigma = self.sigma = {
-            scenario_name: [
-                model.addVar(
-                    vtype=GRB.CONTINUOUS, lb=0, ub=1,
-                    name=f"sigma_{scenario_name}_{action_profile_idx}"
-                )
-                for action_profile_idx in range(len(joint_action_profiles))
-            ]
-            for scenario_name in scenarios
-        }
-
-        # constraint: \sum_{rho \in \mathcal{A}} sigma[\omega, rho] = 1
-        for scenario_name in scenarios:
-            model.addConstr(
-                gp.quicksum(sigma[scenario_name]) == 1,
-                name=f"sigma_{scenario_name}"
-            )
-
-        pot_coeffs = []
-        cost_coeffs = []
-        self.all_sigma_vars = list(
-            itertools.chain.from_iterable(
-                sigma_vars
-                for sigma_vars in sigma.values()
-            )
+        sigma = self.sigma = model.addMVar(
+            shape=(num_scenarios, num_joint),
+            lb=0,
+            ub=1,
+            name="sigma"
         )
 
-        for scenario_name, mu in scenarios.items():
-            tai_matrix = tau[scenario_name]
+        # constraint: \sum_{rho \in \mathcal{A}} sigma[\omega, rho] = 1
+        model.addConstr(
+            sigma.sum(axis=1) == 1.0,
+            name="simplex"
+        )
+
+        pot_coeffs = self.pot_coeffs = np.zeros((num_scenarios, num_joint))
+        cost_coeffs = self.cost_coeffs = np.zeros((num_scenarios, num_joint))
+
+        for scenario_idx, (scenario_name, mu) in enumerate(scenarios.items()):
+            tau_matrix = tau[scenario_name]
             phi_matrix = phi[scenario_name]
 
             # per joint profile
             potentials = phi_matrix[arc_indices, flow_matrix].sum(axis=1)
-            costs = (flow_matrix * tai_matrix[arc_indices, flow_matrix]).sum(axis=1)
+            costs = (flow_matrix * tau_matrix[arc_indices, flow_matrix]).sum(axis=1)
 
-            pot_coeffs.extend((mu * potentials).tolist())
-            cost_coeffs.extend((mu * costs).tolist())
-
-        self.pot_coeffs = pot_coeffs
-        self.cost_coeffs = cost_coeffs
+            pot_coeffs[scenario_idx] = mu * potentials
+            cost_coeffs[scenario_idx] = mu * costs
 
         def add_ic_constraints():
-            for od, paths in paths_per_od.items():
-                od_idx = T[od]
-                expected_deviate_benefit = {
-                    (p0_idx, p1_idx): ([], [])
-                    for p0_idx in range(len(paths))
-                    for p1_idx in range(len(paths))
-                    if p0_idx != p1_idx
-                }
+            # len(paths) != k edge case for small graphs
+            num_path_pairs = sum(len(paths) * (len(paths) - 1) for paths in paths_per_od.values())
+            # (num_path_pairs, num_scenarios, num_joint)
+            constraints = np.zeros((num_path_pairs, num_scenarios, num_joint))
 
-                for scenario_name, mu in scenarios.items():
-                    sigma_vars = sigma[scenario_name]
-                    tau_matrix = tau[scenario_name]
+            for scenario_idx, (scenario_name, mu) in enumerate(scenarios.items()):
+                # (num_arcs, max_flow + 1)
+                tau_matrix = tau[scenario_name]
 
-                    # (num_joint x num_arcs)
-                    # arc_cost = np.column_stack([tau_matrix[i, flow_matrix[:, i]] for i in range(num_arcs)])
-                    # arc_cost_dev = np.column_stack([tau_matrix[i, flow_matrix[:, i] + 1] for i in range(num_arcs)])
-                    arc_cost = tau_matrix[arc_indices, flow_matrix]
-                    arc_cost_dev = tau_matrix[arc_indices, flow_matrix + 1]
+                # (num_joint x num_arcs)
+                arc_cost = tau_matrix[arc_indices, flow_matrix]
+                arc_cost_dev = tau_matrix[arc_indices, flow_matrix + 1]
 
+                path_pair_idx = 0
+                for od, paths in paths_per_od.items():
                     for p0_idx in range(len(paths)):
                         # (num_joint,)
                         counts = path_flows[od, p0_idx]
@@ -197,24 +180,23 @@ class Model:
                             cost_deviate = arc_cost[:, shared_arcs].sum(axis=1)
                             cost_deviate += arc_cost_dev[:, dev_arcs].sum(axis=1)
 
-                            _coeffs = (mu * counts * (cost_follow - cost_deviate))
+                            constraints[path_pair_idx, scenario_idx] = mu * counts * (cost_follow - cost_deviate)
+                            path_pair_idx += 1
 
-                            coeffs, vars = expected_deviate_benefit[p0_idx, p1_idx]
-                            coeffs.extend(_coeffs.ravel())
-                            vars.extend(sigma_vars)
-
-                # for (p0_idx, p1_idx), (coeffs, vars) in expected_deviate_benefit.items():
-                #     model.addConstr(
-                #         gp.LinExpr(coeffs, vars) <= 0,
-                #         name=f"obed_{od}_{p0_idx}_to_{p1_idx}"
-                #     )
+            model.addMConstr(
+                constraints.reshape(num_path_pairs, num_scenarios * num_joint),
+                sigma.reshape(-1),
+                GRB.LESS_EQUAL,
+                np.zeros(num_path_pairs),
+                name="obed"
+            )
         self.add_ic_constraints = add_ic_constraints
 
     def gen_expected_potential(self):
-        return gp.LinExpr(self.pot_coeffs, self.all_sigma_vars)
+        return self.pot_coeffs.ravel() @ self.sigma.reshape(-1)
 
     def gen_expected_social_cost(self):
-        return gp.LinExpr(self.cost_coeffs, self.all_sigma_vars)
+        return self.cost_coeffs.ravel() @ self.sigma.reshape(-1)
 
     def debug(self):
         model = self.model
@@ -231,12 +213,11 @@ class Model:
         out.append(f"{model.ObjVal=:.2f}")
         out.append(f"{model.Runtime=:.3f}s")
 
-        for scenario_name in scenarios:
-            sigma_vars = sigma[scenario_name]
+        for scenario_idx, scenario_name in enumerate(scenarios):
             out.append(f"\nState: {scenario_name}")
 
             for action_profile_idx, joint_profile in enumerate(joint_action_profiles):
-                prob = sigma_vars[action_profile_idx].X
+                prob = sigma[scenario_idx, action_profile_idx].X
                 if prob > 1e-3:
                     out.append(f"\tJoint Profile {action_profile_idx}: ({prob=:.3f})")
                     for od, od_profile in zip(profiles_per_od.keys(), joint_profile):
